@@ -1,6 +1,6 @@
 import { Pool, PoolClient } from "pg";
-import config from "@/config/env";
-import logger from "@/utils/logger";
+import config from "../config/env";
+import logger from "../utils/logger";
 
 const pool = new Pool({
   host: config.db.host,

@@ -6,7 +6,7 @@ import compression from "compression";
 import rateLimit from "express-rate-limit";
 import hpp from "hpp";
 import config from "./config/env";
-import routes from "@/routes";
+import routes from "./routes";
 
 import { errorHandler, notFound } from "./middlewares/errorHandler";
 import logger from "./utils/logger";
