@@ -7,6 +7,7 @@ export interface JwtPayload {
   id: string;
   email: string;
   role: string;
+  tenantId?: string;
   iat: number;
   exp: number;
 }
@@ -21,7 +22,7 @@ declare global {
   }
 }
 
-export const authenticate = (req: Request, _res: Response, next: NextFunction): void => {
+export const validateToken = (req: Request, _res: Response, next: NextFunction): void => {
   const authHeader = req.headers.authorization;
 
   if (!authHeader?.startsWith("Bearer ")) {
@@ -32,6 +33,7 @@ export const authenticate = (req: Request, _res: Response, next: NextFunction): 
 
   try {
     const decoded = jwt.verify(token, config.jwt.secret) as JwtPayload;
+
     req.user = decoded;
     next();
   } catch {
@@ -39,12 +41,21 @@ export const authenticate = (req: Request, _res: Response, next: NextFunction): 
   }
 };
 
-export const authorize = (...roles: string[]) => {
-  return (req: Request, _res: Response, next: NextFunction): void => {
-    if (!req.user || !roles.includes(req.user.role)) {
+export const verifyTenant = (req: Request, _res: Response, next: NextFunction): void => {
+  validateToken(req, _res, () => {
+    if (!req.user?.tenantId) {
+      return next(new UnauthorizedError("Invalid token: tenantId is required"));
+    }
+    next();
+  });
+};
+
+export const verifyAdmin = (req: Request, _res: Response, next: NextFunction): void => {
+  validateToken(req, _res, () => {
+    if (!req.user || req.user.role !== "admin") {
       return next(new UnauthorizedError("You do not have permission to perform this action"));
     }
     next();
-  };
+  });
 };
 

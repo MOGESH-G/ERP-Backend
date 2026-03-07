@@ -1,24 +1,24 @@
 import app from "./app";
-import config from "./config/env";
-import { connectDB } from "./config/database";
+import { connectMasterDB, loadAllTenantPools } from "./config/database";
 import logger from "./utils/logger";
+
+const PORT = parseInt(process.env.PORT || "3000", 10);
 
 const startServer = async (): Promise<void> => {
   try {
-    // Connect to database
-    await connectDB();
+    await connectMasterDB();
 
-    // Start server
-    const server = app.listen(config.port, () => {
-      logger.info(`🚀 Server running in ${config.nodeEnv} mode on port ${config.port}`);
-      logger.info(`📡 API available at http://localhost:${config.port}${config.apiPrefix}`);
+    await loadAllTenantPools();
+
+    const server = app.listen(PORT, () => {
+      logger.info(`🚀 Server running on port ${PORT}`);
+      logger.info(`📡 API: http://localhost:${PORT}/api/v1`);
     });
 
-    // Graceful shutdown
     const shutdown = (signal: string): void => {
-      logger.info(`${signal} received. Shutting down gracefully...`);
+      logger.info(`${signal} received. Shutting down...`);
       server.close(() => {
-        logger.info("HTTP server closed.");
+        logger.info("Server closed");
         process.exit(0);
       });
     };
@@ -26,14 +26,12 @@ const startServer = async (): Promise<void> => {
     process.on("SIGTERM", () => shutdown("SIGTERM"));
     process.on("SIGINT", () => shutdown("SIGINT"));
 
-    // Unhandled rejections
-    process.on("unhandledRejection", (reason: unknown) => {
+    process.on("unhandledRejection", (reason) => {
       logger.error("Unhandled Rejection:", reason);
       server.close(() => process.exit(1));
     });
 
-    // Uncaught exceptions
-    process.on("uncaughtException", (error: Error) => {
+    process.on("uncaughtException", (error) => {
       logger.error("Uncaught Exception:", error);
       process.exit(1);
     });

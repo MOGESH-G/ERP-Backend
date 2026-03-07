@@ -1,8 +1,13 @@
 import express from "express";
-import userRoutes from "./user.routes";
+import tenantRoutes from "./master/tenant.routes";
+import usersRoutes from "./tenants/users.routes";
+import { verifyAdmin, verifyTenant } from "../middlewares/auth";
 
 const router = express.Router();
 
-router.use("/users", userRoutes);
+router.get("/health", (_req, res) => res.status(200).json({ status: "ok" }));
+router.use("/tenants", verifyAdmin, tenantRoutes);
+
+router.use("/users", verifyTenant, usersRoutes);
 
 export default router;
