@@ -90,7 +90,7 @@ CREATE TABLE IF NOT EXISTS users (
   shop_id       UUID        REFERENCES shops(id) ON DELETE SET NULL,
   name          TEXT        NOT NULL,
   email         TEXT        NOT NULL UNIQUE,
-  password_hash TEXT        NOT NULL,
+  password TEXT        NOT NULL,
   role          user_role   NOT NULL DEFAULT 'cashier',
   is_active     BOOLEAN     NOT NULL DEFAULT TRUE,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),

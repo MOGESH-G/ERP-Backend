@@ -107,7 +107,7 @@ CREATE TABLE IF NOT EXISTS admin_accounts (
   tenant_id     UUID        NOT NULL REFERENCES tenants(id) ON DELETE RESTRICT,
   name          TEXT        NOT NULL,
   email         TEXT        NOT NULL,
-  password_hash TEXT        NOT NULL,
+  password      TEXT        NOT NULL,
   is_active     BOOLEAN     NOT NULL DEFAULT TRUE,
   last_login_at TIMESTAMPTZ,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
