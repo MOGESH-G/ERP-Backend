@@ -39,8 +39,6 @@ DO $$ BEGIN CREATE TYPE stock_movement  AS ENUM ('purchase', 'sale', 'return_in'
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN CREATE TYPE price_tier      AS ENUM ('retail', 'wholesale', 'distributor', 'promotional');
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-DO $$ BEGIN CREATE TYPE user_role       AS ENUM ('shop_manager', 'cashier', 'accountant', 'viewer');
-EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN CREATE TYPE loyalty_tx_type AS ENUM ('earn', 'redeem', 'expire', 'adjust');
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN CREATE TYPE reorder_status  AS ENUM ('suggested', 'approved', 'ordered', 'received', 'dismissed');
@@ -90,11 +88,75 @@ CREATE TABLE IF NOT EXISTS users (
   shop_id       UUID        REFERENCES shops(id) ON DELETE SET NULL,
   name          TEXT        NOT NULL,
   email         TEXT        NOT NULL UNIQUE,
-  password TEXT        NOT NULL,
-  role          user_role   NOT NULL DEFAULT 'cashier',
+  password      TEXT        NOT NULL,
   is_active     BOOLEAN     NOT NULL DEFAULT TRUE,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ================================================================
+-- SECTION 3A — SIDEBAR MENUS
+-- ================================================================
+
+CREATE TABLE IF NOT EXISTS menus (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name        TEXT NOT NULL,
+  route       TEXT,
+  icon        TEXT,
+  parent_id   UUID REFERENCES menus(id) ON DELETE CASCADE,
+  sort_order  INT DEFAULT 0,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ================================================================
+-- SECTION 3B — ROLES
+-- ================================================================
+
+CREATE TABLE IF NOT EXISTS roles (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name        TEXT NOT NULL UNIQUE,
+  description TEXT,
+  is_system   BOOLEAN NOT NULL DEFAULT FALSE,
+  created_by  UUID REFERENCES users(id),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ================================================================
+-- SECTION 3C — PERMISSIONS
+-- ================================================================
+
+CREATE TABLE IF NOT EXISTS permissions (
+  id        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  menu_id   UUID REFERENCES menus(id) ON DELETE CASCADE,
+  resource  TEXT NOT NULL,
+  action    TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(resource, action)
+);
+
+-- ================================================================
+-- SECTION 3D — ROLE PERMISSIONS
+-- ================================================================
+
+CREATE TABLE IF NOT EXISTS role_permissions (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  role_id       UUID NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+  permission_id UUID NOT NULL REFERENCES permissions(id) ON DELETE CASCADE,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(role_id, permission_id)
+);
+
+-- ================================================================
+-- SECTION 3E — USER ROLES
+-- ================================================================
+
+CREATE TABLE IF NOT EXISTS user_roles (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role_id     UUID NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+  assigned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(user_id, role_id)
 );
 
 -- ================================================================

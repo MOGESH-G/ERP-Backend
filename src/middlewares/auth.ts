@@ -18,6 +18,10 @@ declare global {
   namespace Express {
     interface Request {
       user?: JwtPayload;
+      tenant?: {
+        id: string;
+        slug: string;
+      };
     }
   }
 }
@@ -43,9 +47,19 @@ export const validateToken = (req: Request, _res: Response, next: NextFunction):
 
 export const verifyTenant = (req: Request, _res: Response, next: NextFunction): void => {
   validateToken(req, _res, () => {
-    if (!req.user?.tenantId) {
-      return next(new UnauthorizedError("Invalid token: tenantId is required"));
+    if (!req.tenant?.id) {
+      return next(new UnauthorizedError("Tenant not resolved"));
     }
+
+    if (req.user?.tenantId && req.user.tenantId !== req.tenant.id) {
+      return next(new UnauthorizedError("Invalid token: tenant mismatch"));
+    }
+
+    // Ensure tenantId is always available for downstream handlers
+    if (req.user) {
+      req.user.tenantId = req.tenant.id;
+    }
+
     next();
   });
 };

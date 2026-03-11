@@ -1,6 +1,5 @@
 import { Request, Response, NextFunction } from "express";
 import bcrypt from "bcryptjs";
-import { sendSuccess, sendCreated } from "../../utils/apiResponse";
 import { NotFoundError } from "../../utils/appError";
 import { tenantQuery } from "../../config/database";
 
@@ -20,17 +19,25 @@ export const createUser = async (
 
     const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
 
+    if (!req.tenant?.id) {
+      throw new Error("Tenant not resolved");
+    }
+
     const result = await tenantQuery(
-      req.user!.tenantId!,
+      req.tenant.id,
       `
-      INSERT INTO users (name,email,password_hash,role,shop_id)
+      INSERT INTO users (name,email,password,role,shop_id)
       VALUES ($1,$2,$3,$4,$5)
       RETURNING id,name,email,role,shop_id,created_at
       `,
       [name, email, passwordHash, role || "cashier", shop_id || null],
     );
 
-    sendCreated(res, result, "User created successfully");
+    res.status(201).json({
+      status: "success",
+      data: result,
+      message: "User created successfully",
+    });
   } catch (err) {
     next(err);
   }
@@ -41,8 +48,12 @@ export const createUser = async (
  */
 export const getUsers = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
+    if (!req.tenant?.id) {
+      throw new Error("Tenant not resolved");
+    }
+
     const users = await tenantQuery(
-      req.user!.tenantId!,
+      req.tenant.id,
       `
       SELECT 
         id,
@@ -57,7 +68,11 @@ export const getUsers = async (req: Request, res: Response, next: NextFunction):
       `,
     );
 
-    sendSuccess(res, users, "Users retrieved");
+    res.status(200).json({
+      status: "success",
+      data: users,
+      message: "Users retrieved",
+    });
   } catch (err) {
     next(err);
   }
@@ -72,8 +87,12 @@ export const getUserById = async (
   next: NextFunction,
 ): Promise<void> => {
   try {
+    if (!req.tenant?.id) {
+      throw new Error("Tenant not resolved");
+    }
+
     const user = await tenantQuery(
-      req.user!.tenantId!,
+      req.tenant.id,
       `
       SELECT 
         id,
@@ -89,11 +108,15 @@ export const getUserById = async (
       [req.params.id],
     );
 
-    if (!user) {
+    if (!user.length) {
       throw new NotFoundError("User not found");
     }
 
-    sendSuccess(res, user, "User retrieved");
+    res.status(200).json({
+      status: "success",
+      data: user[0],
+      message: "User retrieved",
+    });
   } catch (err) {
     next(err);
   }
@@ -110,8 +133,12 @@ export const updateUser = async (
   try {
     const { name, role, shop_id, is_active } = req.body;
 
+    if (!req.tenant?.id) {
+      throw new Error("Tenant not resolved");
+    }
+
     const result = await tenantQuery(
-      req.user!.tenantId!,
+      req.tenant.id,
       `
       UPDATE users
       SET
@@ -126,11 +153,15 @@ export const updateUser = async (
       [name, role, shop_id, is_active, req.params.id],
     );
 
-    if (!result) {
+    if (!result.length) {
       throw new NotFoundError("User not found");
     }
 
-    sendSuccess(res, result, "User updated");
+    res.status(200).json({
+      status: "success",
+      data: result[0],
+      message: "User updated",
+    });
   } catch (err) {
     next(err);
   }
@@ -145,15 +176,25 @@ export const deleteUser = async (
   next: NextFunction,
 ): Promise<void> => {
   try {
-    const result = await tenantQuery(req.user!.tenantId!, `DELETE FROM users WHERE id=$1 RETURNING id`, [
-      req.params.id,
-    ]);
+    if (!req.tenant?.id) {
+      throw new Error("Tenant not resolved");
+    }
 
-    if (!result) {
+    const result = await tenantQuery(
+      req.tenant.id,
+      `DELETE FROM users WHERE id=$1 RETURNING id`,
+      [req.params.id],
+    );
+
+    if (!result.length) {
       throw new NotFoundError("User not found");
     }
 
-    sendSuccess(res, null, "User deleted");
+    res.status(200).json({
+      status: "success",
+      data: null,
+      message: "User deleted",
+    });
   } catch (err) {
     next(err);
   }

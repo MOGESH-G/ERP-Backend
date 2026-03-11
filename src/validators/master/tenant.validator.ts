@@ -13,7 +13,7 @@ export const createTenantSchema = Joi.object({
     name: Joi.string().trim().min(2).max(50).required(),
     email: Joi.string().trim().email().lowercase().required(),
     password: Joi.string()
-      .min(8)
+      .min(6)
       .pattern(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])/)
       .required()
       .messages({

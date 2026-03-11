@@ -1,7 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import { provisionTenant, deprovisionTenant } from "../../services/provision.service";
 import { masterQuery } from "../../config/database";
-import { sendSuccess, sendCreated } from "../../utils/apiResponse";
 import { NotFoundError } from "../../utils/appError";
 
 /**
@@ -15,7 +14,11 @@ export const createTenant = async (
 ): Promise<void> => {
   try {
     const result = await provisionTenant(req.body);
-    sendCreated(res, result, "Tenant provisioned successfully");
+    res.status(201).json({
+      status: "success",
+      data: result,
+      message: "Tenant provisioned successfully",
+    });
   } catch (err) {
     next(err);
   }
@@ -46,7 +49,11 @@ export const getAllTenants = async (
        ORDER BY created_at DESC`,
     );
 
-    sendSuccess(res, tenants, "Tenants retrieved");
+    res.status(200).json({
+      status: "success",
+      data: tenants,
+      message: "Tenants retrieved",
+    });
   } catch (err) {
     next(err);
   }
@@ -89,7 +96,11 @@ export const getTenantById = async (
       throw new NotFoundError("Tenant not found");
     }
 
-    sendSuccess(res, tenants[0], "Tenant retrieved");
+    res.status(200).json({
+      status: "success",
+      data: tenants[0],
+      message: "Tenant retrieved",
+    });
   } catch (err) {
     next(err);
   }
@@ -122,7 +133,11 @@ export const getTenantLogs = async (
       [req.params.id],
     );
 
-    sendSuccess(res, logs, "Provisioning logs retrieved");
+    res.status(200).json({
+      status: "success",
+      data: logs,
+      message: "Provisioning logs retrieved",
+    });
   } catch (err) {
     next(err);
   }
@@ -148,7 +163,11 @@ export const deleteTenant = async (
 
     await deprovisionTenant(tenantId);
 
-    sendSuccess(res, null, "Tenant deprovisioned successfully");
+    res.status(200).json({
+      status: "success",
+      data: null,
+      message: "Tenant deprovisioned successfully",
+    });
   } catch (err) {
     next(err);
   }

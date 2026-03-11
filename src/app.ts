@@ -34,6 +34,7 @@ const limiter = rateLimit({
   legacyHeaders: false,
   message: { status: "fail", message: "Too many requests, please try again later." },
 });
+
 app.use("/api", limiter);
 
 // ─── Body Parsing ────────────────────────────────────────────────────────────
