@@ -13,23 +13,34 @@ export const Login = async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
-  // Fetch user + associated roles from tenant DB (RBAC stored in tenant schema)
   const query = `
-    SELECT
+    SELECT  
       u.id,
       u.shop_id,
       u.name,
       u.email,
       u.password,
       u.is_active,
-      COALESCE(json_agg(r.name) FILTER (WHERE r.name IS NOT NULL), '[]') AS roles
+
+      COALESCE(
+        jsonb_agg(DISTINCT r.name) 
+        FILTER (WHERE r.name IS NOT NULL),
+        '[]'::jsonb
+      ) AS roles,
+
+      COALESCE(
+        jsonb_object_agg(p.key, p.value),
+        '{}'::jsonb
+      ) AS permissions
+
     FROM users u
     LEFT JOIN user_roles ur ON ur.user_id = u.id
     LEFT JOIN roles r ON r.id = ur.role_id
+    LEFT JOIN LATERAL jsonb_each(r.permissions) p(key,value) ON TRUE
+
     WHERE u.email = $1
     GROUP BY u.id
-  `;
-
+    `;
   try {
     const values = [email];
     const result = await tenantQuery(req.tenant.id, query, values);
@@ -51,20 +62,21 @@ export const Login = async (req: Request, res: Response): Promise<void> => {
     const roles: string[] = Array.isArray(user.roles)
       ? user.roles
       : typeof user.roles === "string"
-      ? JSON.parse(user.roles)
-      : [];
+        ? JSON.parse(user.roles)
+        : [];
 
     const token = jwt.sign(
       {
         id: user.id,
         email: user.email,
         roles,
+        permissions: user.permissions,
         tenantId: req.tenant.id,
       },
       config.jwt.secret,
       {
         expiresIn: config.jwt.expiresIn as any,
-      }
+      },
     );
 
     res.status(200).json({
@@ -74,6 +86,7 @@ export const Login = async (req: Request, res: Response): Promise<void> => {
         name: user.name,
         email: user.email,
         roles,
+        permissions: user.permissions,
         shop_id: user.shop_id,
       },
       token,

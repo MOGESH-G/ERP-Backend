@@ -6,5 +6,6 @@ export type TenantUser = {
   password: string;
   is_active: boolean;
   roles?: string[];
+  permissions?: Record<string, Record<string, boolean>>;
   tenant_id?: string;
 };

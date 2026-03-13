@@ -81,9 +81,10 @@ CREATE TABLE IF NOT EXISTS shops (
 
 -- ================================================================
 -- SECTION 3 — USERS
--- Operational users only. Tenant admin lives in master DB.
+-- Operational users inside the tenant
 -- ================================================================
-CREATE TABLE users (
+
+CREATE TABLE IF NOT EXISTS users (
   id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   shop_id     UUID REFERENCES shops(id) ON DELETE SET NULL,
   name        TEXT NOT NULL,
@@ -96,9 +97,10 @@ CREATE TABLE users (
 
 -- ================================================================
 -- SECTION 3A — ROLES
+-- Permissions stored as JSONB
 -- ================================================================
 
-CREATE TABLE roles (
+CREATE TABLE IF NOT EXISTS roles (
   id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name        TEXT NOT NULL UNIQUE,
   description TEXT,
@@ -106,19 +108,62 @@ CREATE TABLE roles (
   permissions JSONB NOT NULL DEFAULT '{}'::jsonb,
 
   is_system   BOOLEAN NOT NULL DEFAULT FALSE,
+
   created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE INDEX IF NOT EXISTS idx_roles_permissions
+ON roles USING GIN (permissions);
+
 -- ================================================================
--- SECTION 3C — USER ROLES
+-- SECTION 3B — USER ROLES
+-- Many-to-many mapping
 -- ================================================================
 
-CREATE TABLE user_roles (
-  user_id UUID REFERENCES users(id) ON DELETE CASCADE,
-  role_id UUID REFERENCES roles(id) ON DELETE CASCADE,
+CREATE TABLE IF NOT EXISTS user_roles (
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role_id UUID NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
   PRIMARY KEY(user_id, role_id)
 );
+
+CREATE INDEX IF NOT EXISTS idx_user_roles_user
+ON user_roles(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_user_roles_role
+ON user_roles(role_id);
+
+-- ================================================================
+-- SECTION 3C — PERMISSIONS FUNCTION
+-- ================================================================
+
+CREATE OR REPLACE FUNCTION fn_generate_admin_permissions()
+RETURNS JSONB
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  perms JSONB := '{}';
+  rec RECORD;
+BEGIN
+  FOR rec IN
+    SELECT key
+    FROM features
+    WHERE is_active = TRUE
+  LOOP
+    perms := perms || jsonb_build_object(
+      rec.key,
+      jsonb_build_object(
+        'view', true,
+        'create', true,
+        'update', true,
+        'delete', true
+      )
+    );
+  END LOOP;
+
+  RETURN perms;
+END;
+$$;
 
 -- ================================================================
 -- SECTION 4 — FINANCIAL ACCOUNTING

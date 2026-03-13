@@ -155,21 +155,22 @@ CREATE TABLE IF NOT EXISTS internal_api_keys (
 -- Master list of every feature that exists in the system.
 -- Adding a new feature = one INSERT row. No schema change.
 -- ================================================================
+DO $$ BEGIN
+  CREATE TYPE feature_category AS ENUM (
+    'core',
+    'growth',
+    'enterprise',
+    'ai'
+  );
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
--- CREATE TYPE feature_category AS ENUM (
---   'core',
---   'growth',
---   'enterprise',
---   'ai'
--- );
-
-CREATE TABLE features (
+CREATE TABLE IF NOT EXISTS  features (
   id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   key          TEXT NOT NULL UNIQUE,
   name         TEXT NOT NULL,
   description  TEXT,
 
-  -- category     feature_category NOT NULL,
+  category     feature_category NOT NULL,
 
   route        TEXT,
   icon         TEXT,
@@ -184,7 +185,8 @@ CREATE TABLE features (
   updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-INSERT INTO features (id, name, description, category) VALUES
+INSERT INTO features (key, name, description, category) VALUES
+  ('feat_dashboard',          'Dashboard',             'Main overview and analytics',             'core'),
   ('feat_pos',                'POS Terminal',          'Point of sale billing',                   'core'),
   ('feat_inventory',          'Inventory',             'Stock tracking and movements',            'core'),
   ('feat_purchases',          'Purchases',             'Supplier purchase orders',                'core'),
@@ -210,14 +212,14 @@ INSERT INTO features (id, name, description, category) VALUES
   ('feat_ai_dead_stock',      'Dead Stock Detection',  'Identify slow and dead inventory',        'ai'),
   ('feat_ai_demand_forecast', 'Demand Forecast',       'Predict future stock requirements',       'ai'),
   ('feat_ai_price_suggestion','Price Suggestion',      'AI-based selling price recommendations',  'ai')
-ON CONFLICT (id) DO NOTHING;
+ON CONFLICT (key) DO NOTHING;
 
-INSERT INTO features (id, name, description, category, is_limit, default_val) VALUES
+INSERT INTO features (key, name, description, category, is_limit, default_val) VALUES
   ('limit_shops',              'Shop Limit',            'Maximum number of shops',           'core', TRUE, '1'),
   ('limit_users',              'User Limit',            'Maximum number of users',           'core', TRUE, '3'),
   ('limit_products',           'Product Limit',         'Maximum number of products',        'core', TRUE, '500'),
   ('limit_invoices_per_month', 'Monthly Invoice Limit', 'Maximum invoices per month',        'core', TRUE, '1000')
-ON CONFLICT (id) DO NOTHING;
+ON CONFLICT (key) DO NOTHING;
 
 -- ================================================================
 -- PLAN FEATURE MAP
@@ -227,100 +229,119 @@ ON CONFLICT (id) DO NOTHING;
 -- ================================================================
 CREATE TABLE IF NOT EXISTS plan_features (
   plan       TEXT NOT NULL,
-  feature_id TEXT NOT NULL REFERENCES features(id) ON DELETE CASCADE,
+  feature_id UUID NOT NULL REFERENCES features(id) ON DELETE CASCADE,
   value      TEXT,
   PRIMARY KEY (plan, feature_id)
 );
-
 -- trial
-INSERT INTO plan_features (plan, feature_id, value) VALUES
-  ('trial', 'feat_pos',                NULL),
-  ('trial', 'feat_inventory',          NULL),
-  ('trial', 'feat_purchases',          NULL),
-  ('trial', 'feat_basic_reports',      NULL),
-  ('trial', 'feat_customers',          NULL),
-  ('trial', 'feat_suppliers',          NULL),
-  ('trial', 'limit_shops',             '1'),
-  ('trial', 'limit_users',             '3'),
-  ('trial', 'limit_products',          '200'),
-  ('trial', 'limit_invoices_per_month','500')
+INSERT INTO plan_features (plan, feature_id, value)
+SELECT 'trial', f.id, v.value
+FROM (
+  VALUES
+    ('feat_pos', NULL),
+    ('feat_inventory', NULL),
+    ('feat_purchases', NULL),
+    ('feat_basic_reports', NULL),
+    ('feat_customers', NULL),
+    ('feat_suppliers', NULL),
+    ('limit_shops', '1'),
+    ('limit_users', '3'),
+    ('limit_products', '200'),
+    ('limit_invoices_per_month', '500')
+) AS v(key, value)
+JOIN features f ON f.key = v.key
 ON CONFLICT (plan, feature_id) DO NOTHING;
 
 -- starter
-INSERT INTO plan_features (plan, feature_id, value) VALUES
-  ('starter', 'feat_pos',                NULL),
-  ('starter', 'feat_inventory',          NULL),
-  ('starter', 'feat_purchases',          NULL),
-  ('starter', 'feat_basic_reports',      NULL),
-  ('starter', 'feat_customers',          NULL),
-  ('starter', 'feat_suppliers',          NULL),
-  ('starter', 'feat_price_lists',        NULL),
-  ('starter', 'feat_offline_pos',        NULL),
-  ('starter', 'limit_shops',             '1'),
-  ('starter', 'limit_users',             '5'),
-  ('starter', 'limit_products',          '1000'),
-  ('starter', 'limit_invoices_per_month','3000')
+INSERT INTO plan_features (plan, feature_id, value)
+SELECT 'starter', f.id, v.value
+FROM (
+  VALUES
+    ('feat_pos', NULL),
+    ('feat_inventory', NULL),
+    ('feat_purchases', NULL),
+    ('feat_basic_reports', NULL),
+    ('feat_customers', NULL),
+    ('feat_suppliers', NULL),
+    ('feat_price_lists', NULL),
+    ('feat_offline_pos', NULL),
+    ('limit_shops', '1'),
+    ('limit_users', '5'),
+    ('limit_products', '1000'),
+    ('limit_invoices_per_month', '3000')
+) AS v(key, value)
+JOIN features f ON f.key = v.key
 ON CONFLICT (plan, feature_id) DO NOTHING;
 
 -- growth
-INSERT INTO plan_features (plan, feature_id, value) VALUES
-  ('growth', 'feat_pos',                NULL),
-  ('growth', 'feat_inventory',          NULL),
-  ('growth', 'feat_purchases',          NULL),
-  ('growth', 'feat_basic_reports',      NULL),
-  ('growth', 'feat_customers',          NULL),
-  ('growth', 'feat_suppliers',          NULL),
-  ('growth', 'feat_multi_shop',         NULL),
-  ('growth', 'feat_price_lists',        NULL),
-  ('growth', 'feat_customer_groups',    NULL),
-  ('growth', 'feat_loyalty',            NULL),
-  ('growth', 'feat_offline_pos',        NULL),
-  ('growth', 'feat_advanced_reports',   NULL),
-  ('growth', 'feat_purchase_variance',  NULL),
-  ('growth', 'feat_landed_cost',        NULL),
-  ('growth', 'feat_gst_einvoice',       NULL),
-  ('growth', 'feat_audit_log',          NULL),
-  ('growth', 'feat_api_access',         NULL),
-  ('growth', 'feat_whatsapp_sms',       NULL),
-  ('growth', 'feat_ai_reorder',         NULL),
-  ('growth', 'feat_ai_dead_stock',      NULL),
-  ('growth', 'limit_shops',             '5'),
-  ('growth', 'limit_users',             '25'),
-  ('growth', 'limit_products',          '10000'),
-  ('growth', 'limit_invoices_per_month','20000')
+INSERT INTO plan_features (plan, feature_id, value)
+SELECT 'growth', f.id, v.value
+FROM (
+  VALUES
+    ('feat_pos', NULL),
+    ('feat_inventory', NULL),
+    ('feat_purchases', NULL),
+    ('feat_basic_reports', NULL),
+    ('feat_customers', NULL),
+    ('feat_suppliers', NULL),
+    ('feat_multi_shop', NULL),
+    ('feat_price_lists', NULL),
+    ('feat_customer_groups', NULL),
+    ('feat_loyalty', NULL),
+    ('feat_offline_pos', NULL),
+    ('feat_advanced_reports', NULL),
+    ('feat_purchase_variance', NULL),
+    ('feat_landed_cost', NULL),
+    ('feat_gst_einvoice', NULL),
+    ('feat_audit_log', NULL),
+    ('feat_api_access', NULL),
+    ('feat_whatsapp_sms', NULL),
+    ('feat_ai_reorder', NULL),
+    ('feat_ai_dead_stock', NULL),
+    ('limit_shops', '5'),
+    ('limit_users', '25'),
+    ('limit_products', '10000'),
+    ('limit_invoices_per_month', '20000')
+) AS v(key, value)
+JOIN features f ON f.key = v.key
 ON CONFLICT (plan, feature_id) DO NOTHING;
 
 -- enterprise
-INSERT INTO plan_features (plan, feature_id, value) VALUES
-  ('enterprise', 'feat_pos',                NULL),
-  ('enterprise', 'feat_inventory',          NULL),
-  ('enterprise', 'feat_purchases',          NULL),
-  ('enterprise', 'feat_basic_reports',      NULL),
-  ('enterprise', 'feat_customers',          NULL),
-  ('enterprise', 'feat_suppliers',          NULL),
-  ('enterprise', 'feat_multi_shop',         NULL),
-  ('enterprise', 'feat_price_lists',        NULL),
-  ('enterprise', 'feat_customer_groups',    NULL),
-  ('enterprise', 'feat_loyalty',            NULL),
-  ('enterprise', 'feat_offline_pos',        NULL),
-  ('enterprise', 'feat_advanced_reports',   NULL),
-  ('enterprise', 'feat_purchase_variance',  NULL),
-  ('enterprise', 'feat_landed_cost',        NULL),
-  ('enterprise', 'feat_accounting',         NULL),
-  ('enterprise', 'feat_gst_einvoice',       NULL),
-  ('enterprise', 'feat_tcs_tds',            NULL),
-  ('enterprise', 'feat_audit_log',          NULL),
-  ('enterprise', 'feat_books_lock',         NULL),
-  ('enterprise', 'feat_api_access',         NULL),
-  ('enterprise', 'feat_whatsapp_sms',       NULL),
-  ('enterprise', 'feat_ai_reorder',         NULL),
-  ('enterprise', 'feat_ai_dead_stock',      NULL),
-  ('enterprise', 'feat_ai_demand_forecast', NULL),
-  ('enterprise', 'feat_ai_price_suggestion',NULL),
-  ('enterprise', 'limit_shops',             '999'),
-  ('enterprise', 'limit_users',             '999'),
-  ('enterprise', 'limit_products',          '999999'),
-  ('enterprise', 'limit_invoices_per_month','999999')
+INSERT INTO plan_features (plan, feature_id, value)
+SELECT 'enterprise', f.id, v.value
+FROM (
+  VALUES
+    ('feat_pos', NULL),
+    ('feat_inventory', NULL),
+    ('feat_purchases', NULL),
+    ('feat_basic_reports', NULL),
+    ('feat_customers', NULL),
+    ('feat_suppliers', NULL),
+    ('feat_multi_shop', NULL),
+    ('feat_price_lists', NULL),
+    ('feat_customer_groups', NULL),
+    ('feat_loyalty', NULL),
+    ('feat_offline_pos', NULL),
+    ('feat_advanced_reports', NULL),
+    ('feat_purchase_variance', NULL),
+    ('feat_landed_cost', NULL),
+    ('feat_accounting', NULL),
+    ('feat_gst_einvoice', NULL),
+    ('feat_tcs_tds', NULL),
+    ('feat_audit_log', NULL),
+    ('feat_books_lock', NULL),
+    ('feat_api_access', NULL),
+    ('feat_whatsapp_sms', NULL),
+    ('feat_ai_reorder', NULL),
+    ('feat_ai_dead_stock', NULL),
+    ('feat_ai_demand_forecast', NULL),
+    ('feat_ai_price_suggestion', NULL),
+    ('limit_shops', '999'),
+    ('limit_users', '999'),
+    ('limit_products', '999999'),
+    ('limit_invoices_per_month', '999999')
+) AS v(key, value)
+JOIN features f ON f.key = v.key
 ON CONFLICT (plan, feature_id) DO NOTHING;
 
 -- ================================================================
@@ -335,25 +356,29 @@ CREATE OR REPLACE FUNCTION fn_apply_plan_to_tenant(
 RETURNS VOID LANGUAGE plpgsql AS $$
 DECLARE
   resolved JSONB := '{}';
-  rec      RECORD;
+  rec RECORD;
 BEGIN
   FOR rec IN
-    SELECT pf.feature_id, f.is_limit, pf.value
+    SELECT f.key, f.is_limit, pf.value
     FROM plan_features pf
     JOIN features f ON f.id = pf.feature_id
     WHERE pf.plan = p_plan
       AND f.is_active = TRUE
   LOOP
     IF rec.is_limit THEN
-      resolved := jsonb_set(resolved, ARRAY[rec.feature_id], to_jsonb(rec.value::INT));
+      resolved := jsonb_set(
+        resolved,
+        ARRAY[rec.key],
+        to_jsonb(rec.value::INT)
+      );
     ELSE
-      resolved := jsonb_set(resolved, ARRAY[rec.feature_id], 'true'::jsonb);
+      resolved := jsonb_set(
+        resolved,
+        ARRAY[rec.key],
+        'true'::jsonb
+      );
     END IF;
   END LOOP;
-
-  IF resolved = '{}' THEN
-    RAISE EXCEPTION 'Plan "%" not found or has no features', p_plan;
-  END IF;
 
   UPDATE tenants
   SET
@@ -361,10 +386,6 @@ BEGIN
     feature_ids = resolved,
     updated_at  = NOW()
   WHERE id = p_tenant_id;
-
-  IF NOT FOUND THEN
-    RAISE EXCEPTION 'Tenant "%" not found', p_tenant_id;
-  END IF;
 END;
 $$;
 

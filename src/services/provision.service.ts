@@ -9,7 +9,9 @@ import {
 } from "../config/database";
 import logger from "../utils/logger";
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────────────────────
 
 export interface ProvisionTenantInput {
   name: string;
@@ -43,7 +45,9 @@ export interface ProvisionResult {
   };
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────
 
 const generateSlug = (name: string): string =>
   name
@@ -54,18 +58,21 @@ const generateSlug = (name: string): string =>
     .substring(0, 30);
 
 const generateDbName = async (slug: string): Promise<string> => {
-  // let dbName = `erp_${slug}`;
   let dbName = `${slug}`;
   let suffix = 1;
+
   // eslint-disable-next-line no-constant-condition
   while (true) {
     const existing = await masterQuery<{ db_name: string }>(
-      "SELECT db_name FROM tenants WHERE db_name = $1",
+      "SELECT db_name FROM tenants WHERE db_name=$1",
       [dbName],
     );
+
     if (existing.length === 0) break;
+
     dbName = `erp_${slug}_${suffix++}`;
   }
+
   return dbName;
 };
 
@@ -76,120 +83,15 @@ const logStep = async (
   error?: string,
 ): Promise<void> => {
   await masterPool.query(
-    `INSERT INTO provisioning_log (tenant_id, event, status, error_detail)
-     VALUES ($1, $2, $3, $4)`,
+    `INSERT INTO provisioning_log (tenant_id,event,status,error_detail)
+     VALUES ($1,$2,$3,$4)`,
     [tenantId, step, status, error || null],
   );
 };
 
-// ─── Provision ────────────────────────────────────────────────────────────────
-
-// export const provisionTenant = async (input: ProvisionTenantInput): Promise<ProvisionResult> => {
-//   const slug = generateSlug(input.name);
-//   const dbName = await generateDbName(slug);
-//   const plan = input.plan || "trial";
-
-//   logger.info(`🚀 Provisioning tenant: ${input.name} → ${dbName}`);
-
-//   // ── 1. Insert tenant row (status = provisioning) ────────────────────────────
-//   const tenants = await masterQuery<{ id: string }>(
-//     `INSERT INTO tenants (name, slug, db_name, email, plan, status)
-//      VALUES ($1, $2, $3, $4, $5, 'provisioning')
-//      RETURNING id`,
-//     [input.name, slug, dbName, input.email, plan],
-//   );
-//   const tenantId = tenants[0].id;
-
-//   try {
-//     // ── 2. Create physical PostgreSQL database ──────────────────────────────
-//     // NOTE: CREATE DATABASE cannot run inside a transaction
-//     await logStep(tenantId, "create_db", "pending");
-//     await masterPool.query(`CREATE DATABASE "${dbName}"`);
-//     await logStep(tenantId, "create_db", "success");
-//     logger.info(`✅ [${tenantId}] DB created: ${dbName}`);
-
-//     // ── 3. Register pool for the new DB ────────────────────────────────────
-//     registerTenantPool(tenantId, dbName);
-
-//     // ── 4. Run tenant.init.sql — creates all tables, triggers, seed data ────
-//     await logStep(tenantId, "run_schema", "pending");
-//     await runTenantSchema(tenantId); // ← uses database.ts
-//     await logStep(tenantId, "run_schema", "success");
-
-//     // ── 5. Seed tenant_profile in the new DB ───────────────────────────────
-//     await logStep(tenantId, "seed_profile", "pending");
-//     const { tenantQuery } = await import("../config/database");
-//     await tenantQuery(
-//       tenantId,
-//       `INSERT INTO tenant_profile (name, gst_number, pan_number, phone, email, address, currency)
-//        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-//       [
-//         input.name,
-//         input.gst_number || null,
-//         input.pan_number || null,
-//         input.phone || null,
-//         input.email,
-//         input.address || null,
-//         input.currency || "INR",
-//       ],
-//     );
-//     await logStep(tenantId, "seed_profile", "success");
-//     logger.info(`✅ [${tenantId}] tenant_profile seeded`);
-
-//     // ── 6. Create admin account in master DB ────────────────────────────────
-//     await logStep(tenantId, "create_admin", "pending");
-//     const passwordHash = await bcrypt.hash(input.admin.password, 12);
-//     const admins = await masterQuery<{ id: string; name: string; email: string }>(
-//       `INSERT INTO admin_accounts (tenant_id, name, email, password)
-//        VALUES ($1, $2, $3, $4)
-//        RETURNING id, name, email`,
-//       [tenantId, input.admin.name, input.admin.email, passwordHash],
-//     );
-//     await logStep(tenantId, "create_admin", "success");
-//     logger.info(`✅ [${tenantId}] Admin created: ${input.admin.email}`);
-
-//     // ── 7. Create admin account in tenant DB ────────────────────────────────
-//     const admin = admins[0];
-
-//     await tenantQuery(
-//       tenantId,
-//       `INSERT INTO users (name, email, password, is_active)
-//       VALUES ($1, $2, $3, 'admin', true)`,
-//       [admin.name, admin.email, passwordHash],
-//     );
-
-//     // ── 8. Apply plan features to tenant ────────────────────────────────────
-//     await masterPool.query(`SELECT fn_apply_plan_to_tenant($1, $2)`, [tenantId, plan]);
-
-//     // ── 9. Mark tenant active ───────────────────────────────────────────────
-//     await masterPool.query(
-//       `UPDATE tenants SET status = 'active', updated_at = NOW() WHERE id = $1`,
-//       [tenantId],
-//     );
-//     await logStep(tenantId, "provision", "success");
-
-//     logger.info(`🎉 Tenant fully provisioned: ${input.name} [${tenantId}]`);
-
-//     const tenant = (
-//       await masterQuery<{
-//         id: string;
-//         name: string;
-//         slug: string;
-//         db_name: string;
-//         plan: string;
-//         status: string;
-//       }>("SELECT id, name, slug, db_name, plan, status FROM tenants WHERE id = $1", [tenantId])
-//     )[0];
-
-//     return { tenant, admin: admins[0] };
-//   } catch (error) {
-//     // ── Rollback: log failure, mark suspended ───────────────────────────────
-//     logger.error(`❌ Provisioning failed for ${tenantId}:`, error);
-//     await logStep(tenantId, "provision", "failed", String(error));
-//     await masterPool.query(`UPDATE tenants SET status = 'suspended' WHERE id = $1`, [tenantId]);
-//     throw error;
-//   }
-// };
+// ─────────────────────────────────────────────────────────────
+// Provision Tenant
+// ─────────────────────────────────────────────────────────────
 
 export const provisionTenant = async (input: ProvisionTenantInput): Promise<ProvisionResult> => {
   const slug = generateSlug(input.name);
@@ -198,15 +100,13 @@ export const provisionTenant = async (input: ProvisionTenantInput): Promise<Prov
 
   logger.info(`🚀 Provisioning tenant: ${input.name} → ${dbName}`);
 
-  // Track completed steps
   let dbCreated = false;
   let poolRegistered = false;
   let tenantRowCreated = false;
 
-  // ── 1. Insert tenant row ───────────────────────────────────────────────
   const tenants = await masterQuery<{ id: string }>(
-    `INSERT INTO tenants (name, slug, db_name, email, plan, status)
-     VALUES ($1, $2, $3, $4, $5, 'provisioning')
+    `INSERT INTO tenants (name,slug,db_name,email,plan,status)
+     VALUES ($1,$2,$3,$4,$5,'provisioning')
      RETURNING id`,
     [input.name, slug, dbName, input.email, plan],
   );
@@ -215,34 +115,40 @@ export const provisionTenant = async (input: ProvisionTenantInput): Promise<Prov
   tenantRowCreated = true;
 
   try {
-    // ── 2. Create PostgreSQL database ────────────────────────────────────
+    // ─────────────────────────────────────
+    // Create DB
+    // ─────────────────────────────────────
+
     await logStep(tenantId, "create_db", "pending");
 
     await masterPool.query(`CREATE DATABASE "${dbName}"`);
-
     dbCreated = true;
 
     await logStep(tenantId, "create_db", "success");
-    logger.info(`✅ [${tenantId}] DB created: ${dbName}`);
 
-    // ── 3. Register tenant pool ──────────────────────────────────────────
+    // ─────────────────────────────────────
+    // Register pool
+    // ─────────────────────────────────────
+
     registerTenantPool(tenantId, dbName);
     poolRegistered = true;
 
-    // ── 4. Run schema ────────────────────────────────────────────────────
+    // ─────────────────────────────────────
+    // Run schema
+    // ─────────────────────────────────────
+
     await logStep(tenantId, "run_schema", "pending");
-
     await runTenantSchema(tenantId);
-
     await logStep(tenantId, "run_schema", "success");
 
-    // ── 5. Seed tenant profile ───────────────────────────────────────────
-    await logStep(tenantId, "seed_profile", "pending");
+    // ─────────────────────────────────────
+    // Seed tenant profile
+    // ─────────────────────────────────────
 
     await tenantQuery(
       tenantId,
       `INSERT INTO tenant_profile
-       (name, gst_number, pan_number, phone, email, address, currency)
+       (name,gst_number,pan_number,phone,email,address,currency)
        VALUES ($1,$2,$3,$4,$5,$6,$7)`,
       [
         input.name,
@@ -255,10 +161,9 @@ export const provisionTenant = async (input: ProvisionTenantInput): Promise<Prov
       ],
     );
 
-    await logStep(tenantId, "seed_profile", "success");
-
-    // ── 6. Create admin in master DB ─────────────────────────────────────
-    await logStep(tenantId, "create_admin", "pending");
+    // ─────────────────────────────────────
+    // Create master admin
+    // ─────────────────────────────────────
 
     const passwordHash = await bcrypt.hash(input.admin.password, 12);
 
@@ -267,28 +172,89 @@ export const provisionTenant = async (input: ProvisionTenantInput): Promise<Prov
       name: string;
       email: string;
     }>(
-      `INSERT INTO admin_accounts (tenant_id, name, email, password)
+      `INSERT INTO admin_accounts (tenant_id,name,email,password)
        VALUES ($1,$2,$3,$4)
        RETURNING id,name,email`,
       [tenantId, input.admin.name, input.admin.email, passwordHash],
     );
 
-    await logStep(tenantId, "create_admin", "success");
-
     const admin = admins[0];
 
-    // ── 7. Create admin in tenant DB ─────────────────────────────────────
-    await tenantQuery(
+    // ─────────────────────────────────────
+    // Create tenant user
+    // ─────────────────────────────────────
+
+    const users = await tenantQuery<{ id: string }>(
       tenantId,
       `INSERT INTO users (name,email,password,is_active)
-       VALUES ($1,$2,$3,true)`,
+       VALUES ($1,$2,$3,true)
+       RETURNING id`,
       [admin.name, admin.email, passwordHash],
     );
 
-    // ── 8. Apply subscription plan ───────────────────────────────────────
+    const tenantUserId = users[0].id;
+
+    // ─────────────────────────────────────
+    // Apply plan features
+    // ─────────────────────────────────────
+
     await masterPool.query(`SELECT fn_apply_plan_to_tenant($1,$2)`, [tenantId, plan]);
 
-    // ── 9. Activate tenant ───────────────────────────────────────────────
+    const tenantData = (
+      await masterQuery<{ feature_ids: Record<string, any> }>(
+        `SELECT feature_ids FROM tenants WHERE id=$1`,
+        [tenantId],
+      )
+    )[0];
+
+    // ─────────────────────────────────────
+    // Generate admin permissions
+    // ─────────────────────────────────────
+
+    const permissions: Record<string, Record<string, boolean>> = {};
+
+    for (const feature of Object.keys(tenantData.feature_ids)) {
+      if (!feature.startsWith("feat_")) continue;
+
+      const resource = feature.replace("feat_", "");
+
+      permissions[resource] = {
+        view: true,
+        create: true,
+        update: true,
+        delete: true,
+      };
+    }
+
+    // ─────────────────────────────────────
+    // Create admin role
+    // ─────────────────────────────────────
+
+    const roles = await tenantQuery<{ id: string }>(
+      tenantId,
+      `INSERT INTO roles (name,description,permissions,is_system)
+       VALUES ($1,$2,$3,true)
+       RETURNING id`,
+      ["admin", "Tenant Administrator", JSON.stringify(permissions)],
+    );
+
+    const roleId = roles[0].id;
+
+    // ─────────────────────────────────────
+    // Assign role
+    // ─────────────────────────────────────
+
+    await tenantQuery(
+      tenantId,
+      `INSERT INTO user_roles (user_id,role_id)
+       VALUES ($1,$2)`,
+      [tenantUserId, roleId],
+    );
+
+    // ─────────────────────────────────────
+    // Activate tenant
+    // ─────────────────────────────────────
+
     await masterPool.query(
       `UPDATE tenants
        SET status='active',updated_at=NOW()
@@ -297,8 +263,6 @@ export const provisionTenant = async (input: ProvisionTenantInput): Promise<Prov
     );
 
     await logStep(tenantId, "provision", "success");
-
-    logger.info(`🎉 Tenant fully provisioned: ${input.name} [${tenantId}]`);
 
     const tenant = (
       await masterQuery<{
@@ -316,6 +280,8 @@ export const provisionTenant = async (input: ProvisionTenantInput): Promise<Prov
       )
     )[0];
 
+    logger.info(`🎉 Tenant provisioned: ${tenant.name}`);
+
     return { tenant, admin };
   } catch (error) {
     logger.error(`❌ Provisioning failed for ${tenantId}`, error);
@@ -332,7 +298,9 @@ export const provisionTenant = async (input: ProvisionTenantInput): Promise<Prov
   }
 };
 
-// Rollback helper to clean up resources on failure
+// ─────────────────────────────────────────────────────────────
+// Rollback
+// ─────────────────────────────────────────────────────────────
 
 const rollbackProvisioning = async ({
   tenantId,
@@ -350,34 +318,27 @@ const rollbackProvisioning = async ({
   logger.warn(`🔁 Rolling back tenant ${tenantId}`);
 
   try {
-    // remove tenant pool
     if (poolRegistered) {
       await removeTenantPool(tenantId);
     }
 
-    // drop database
     if (dbCreated) {
       await masterPool.query(
         `SELECT pg_terminate_backend(pid)
          FROM pg_stat_activity
-         WHERE datname=$1`,
+         WHERE datname=$1
+         AND pid <> pg_backend_pid()`,
         [dbName],
       );
 
       await masterPool.query(`DROP DATABASE IF EXISTS "${dbName}"`);
-
-      logger.warn(`🗑 Dropped tenant DB ${dbName}`);
+      logger.warn(`🗑 Dropped DB ${dbName}`);
     }
 
-    // remove admin accounts
     await masterPool.query(`DELETE FROM admin_accounts WHERE tenant_id=$1`, [tenantId]);
 
-    await masterPool.query(
-      `DELETE FROM provisioning_log WHERE provisioning_log_tenant_id_fkey=$1`,
-      [tenantId],
-    );
+    await masterPool.query(`DELETE FROM provisioning_log WHERE tenant_id=$1`, [tenantId]);
 
-    // remove tenant row
     if (tenantRowCreated) {
       await masterPool.query(`DELETE FROM tenants WHERE id=$1`, [tenantId]);
     }
@@ -386,28 +347,40 @@ const rollbackProvisioning = async ({
   }
 };
 
-// ─── Deprovision ─────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// Deprovision Tenant
+// ─────────────────────────────────────────────────────────────
 
 export const deprovisionTenant = async (tenantId: string): Promise<void> => {
   const tenants = await masterQuery<{ db_name: string }>(
-    "SELECT db_name FROM tenants WHERE id = $1",
+    "SELECT db_name FROM tenants WHERE id=$1",
     [tenantId],
   );
-  if (!tenants[0]) throw new Error(`Tenant not found: ${tenantId}`);
+
+  if (!tenants[0]) {
+    throw new Error(`Tenant not found: ${tenantId}`);
+  }
 
   const { db_name } = tenants[0];
 
-  // Terminate all active connections first
   await masterPool.query(
     `SELECT pg_terminate_backend(pid)
      FROM pg_stat_activity
-     WHERE datname = $1 AND pid <> pg_backend_pid()`,
+     WHERE datname=$1
+     AND pid <> pg_backend_pid()`,
     [db_name],
   );
 
   await masterPool.query(`DROP DATABASE IF EXISTS "${db_name}"`);
-  await removeTenantPool(tenantId);
-  await masterPool.query(`UPDATE tenants SET status = 'deprovisioned' WHERE id = $1`, [tenantId]);
 
-  logger.info(`🗑️  Tenant deprovisioned: ${tenantId} (${db_name})`);
+  await removeTenantPool(tenantId);
+
+  await masterPool.query(
+    `UPDATE tenants
+     SET status='deprovisioned'
+     WHERE id=$1`,
+    [tenantId],
+  );
+
+  logger.info(`🗑 Tenant deprovisioned: ${tenantId}`);
 };
