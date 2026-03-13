@@ -83,80 +83,41 @@ CREATE TABLE IF NOT EXISTS shops (
 -- SECTION 3 — USERS
 -- Operational users only. Tenant admin lives in master DB.
 -- ================================================================
-CREATE TABLE IF NOT EXISTS users (
-  id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-  shop_id       UUID        REFERENCES shops(id) ON DELETE SET NULL,
-  name          TEXT        NOT NULL,
-  email         TEXT        NOT NULL UNIQUE,
-  password      TEXT        NOT NULL,
-  is_active     BOOLEAN     NOT NULL DEFAULT TRUE,
-  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- ================================================================
--- SECTION 3A — SIDEBAR MENUS
--- ================================================================
-
-CREATE TABLE IF NOT EXISTS menus (
+CREATE TABLE users (
   id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  shop_id     UUID REFERENCES shops(id) ON DELETE SET NULL,
   name        TEXT NOT NULL,
-  route       TEXT,
-  icon        TEXT,
-  parent_id   UUID REFERENCES menus(id) ON DELETE CASCADE,
-  sort_order  INT DEFAULT 0,
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- ================================================================
--- SECTION 3B — ROLES
--- ================================================================
-
-CREATE TABLE IF NOT EXISTS roles (
-  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  name        TEXT NOT NULL UNIQUE,
-  description TEXT,
-  is_system   BOOLEAN NOT NULL DEFAULT FALSE,
-  created_by  UUID REFERENCES users(id),
+  email       TEXT NOT NULL UNIQUE,
+  password    TEXT NOT NULL,
+  is_active   BOOLEAN NOT NULL DEFAULT TRUE,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- ================================================================
--- SECTION 3C — PERMISSIONS
+-- SECTION 3A — ROLES
 -- ================================================================
 
-CREATE TABLE IF NOT EXISTS permissions (
-  id        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  menu_id   UUID REFERENCES menus(id) ON DELETE CASCADE,
-  resource  TEXT NOT NULL,
-  action    TEXT NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE(resource, action)
-);
-
--- ================================================================
--- SECTION 3D — ROLE PERMISSIONS
--- ================================================================
-
-CREATE TABLE IF NOT EXISTS role_permissions (
-  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  role_id       UUID NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
-  permission_id UUID NOT NULL REFERENCES permissions(id) ON DELETE CASCADE,
-  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE(role_id, permission_id)
-);
-
--- ================================================================
--- SECTION 3E — USER ROLES
--- ================================================================
-
-CREATE TABLE IF NOT EXISTS user_roles (
+CREATE TABLE roles (
   id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  role_id     UUID NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
-  assigned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE(user_id, role_id)
+  name        TEXT NOT NULL UNIQUE,
+  description TEXT,
+
+  permissions JSONB NOT NULL DEFAULT '{}'::jsonb,
+
+  is_system   BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ================================================================
+-- SECTION 3C — USER ROLES
+-- ================================================================
+
+CREATE TABLE user_roles (
+  user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+  role_id UUID REFERENCES roles(id) ON DELETE CASCADE,
+  PRIMARY KEY(user_id, role_id)
 );
 
 -- ================================================================

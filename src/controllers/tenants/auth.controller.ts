@@ -1,6 +1,8 @@
 import { tenantQuery } from "../../config/database";
 import { Request, Response } from "express";
 import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
+import config from "../../config/env";
 import { TenantUser } from "../../types/users.types";
 
 export const Login = async (req: Request, res: Response): Promise<void> => {
@@ -49,8 +51,21 @@ export const Login = async (req: Request, res: Response): Promise<void> => {
     const roles: string[] = Array.isArray(user.roles)
       ? user.roles
       : typeof user.roles === "string"
-        ? JSON.parse(user.roles)
-        : [];
+      ? JSON.parse(user.roles)
+      : [];
+
+    const token = jwt.sign(
+      {
+        id: user.id,
+        email: user.email,
+        roles,
+        tenantId: req.tenant.id,
+      },
+      config.jwt.secret,
+      {
+        expiresIn: config.jwt.expiresIn as any,
+      }
+    );
 
     res.status(200).json({
       status: "success",
@@ -61,6 +76,7 @@ export const Login = async (req: Request, res: Response): Promise<void> => {
         roles,
         shop_id: user.shop_id,
       },
+      token,
     });
   } catch (err) {
     res.status(500).json({ message: "Server error" });

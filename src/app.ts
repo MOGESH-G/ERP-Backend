@@ -17,11 +17,18 @@ const app: Application = express();
 app.use(helmet());
 
 // Enable CORS
+// app.use(
+//   cors({
+//     origin: config.cors.origin,
+//     methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
+//     allowedHeaders: ["Content-Type", "Authorization"],
+//     credentials: true,
+//   }),
+// );
+
 app.use(
   cors({
-    origin: config.cors.origin,
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+    origin: true,
     credentials: true,
   }),
 );

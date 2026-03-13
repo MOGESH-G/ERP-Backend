@@ -155,15 +155,33 @@ CREATE TABLE IF NOT EXISTS internal_api_keys (
 -- Master list of every feature that exists in the system.
 -- Adding a new feature = one INSERT row. No schema change.
 -- ================================================================
-CREATE TABLE IF NOT EXISTS features (
-  id          TEXT        PRIMARY KEY,
-  name        TEXT        NOT NULL,
-  description TEXT,
-  category    TEXT        NOT NULL,   -- 'core' | 'growth' | 'enterprise' | 'ai'
-  is_limit    BOOLEAN     NOT NULL DEFAULT FALSE,
-  default_val TEXT,
-  is_active   BOOLEAN     NOT NULL DEFAULT TRUE,
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+
+-- CREATE TYPE feature_category AS ENUM (
+--   'core',
+--   'growth',
+--   'enterprise',
+--   'ai'
+-- );
+
+CREATE TABLE features (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  key          TEXT NOT NULL UNIQUE,
+  name         TEXT NOT NULL,
+  description  TEXT,
+
+  -- category     feature_category NOT NULL,
+
+  route        TEXT,
+  icon         TEXT,
+  parent_id    UUID REFERENCES features(id),
+
+  is_limit     BOOLEAN NOT NULL DEFAULT FALSE,
+  default_val  TEXT,
+
+  is_active    BOOLEAN NOT NULL DEFAULT TRUE,
+
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 INSERT INTO features (id, name, description, category) VALUES
