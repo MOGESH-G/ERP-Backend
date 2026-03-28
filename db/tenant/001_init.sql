@@ -49,28 +49,12 @@ DO $$ BEGIN CREATE TYPE audit_action    AS ENUM ('insert', 'update', 'delete', '
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- ================================================================
--- SECTION 1 — TENANT PROFILE (single row)
--- ================================================================
-CREATE TABLE IF NOT EXISTS tenant_profile (
-  id                UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-  name              TEXT        NOT NULL,
-  gst_number        TEXT        UNIQUE,
-  pan_number        TEXT,
-  address           TEXT,
-  phone             TEXT,
-  email             TEXT,
-  currency          CHAR(3)     NOT NULL DEFAULT 'INR',
-  books_locked_till DATE,
-  created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- ================================================================
--- SECTION 2 — SHOPS
+-- SHOPS
 -- ================================================================
 CREATE TABLE IF NOT EXISTS shops (
   id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
   name       TEXT        NOT NULL,
+  shop_code TEXT        NOT NULL UNIQUE, -- Short identifier for shop (e.g. "BR1", "MAIN") used in invoices/bills/receipts
   address    TEXT,
   phone      TEXT,
   gst_number TEXT,
@@ -80,23 +64,24 @@ CREATE TABLE IF NOT EXISTS shops (
 );
 
 -- ================================================================
--- SECTION 3 — USERS
+-- USERS
 -- Operational users inside the tenant
 -- ================================================================
 
 CREATE TABLE IF NOT EXISTS users (
   id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  shop_id     UUID REFERENCES shops(id) ON DELETE SET NULL,
+  shop_ids     TEXT[] DEFAULT '{}'::TEXT[],
   name        TEXT NOT NULL,
-  email       TEXT NOT NULL UNIQUE,
+  phone       TEXT NOT NULL UNIQUE,
+  email       TEXT,
   password    TEXT NOT NULL,
   is_active   BOOLEAN NOT NULL DEFAULT TRUE,
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  create_info JSONB NOT NULL DEFAULT '{}'::JSONB, -- Store additional information about the created time and person who created the subscription, e.g. { "created_by": "user_id", "created_at": "time" }
+  update_info JSONB NOT NULL DEFAULT '{}'::JSONB, -- Store additional information about the updated time and person who updated the subscription, e.g. { "updated_by": "user_id", "updated_at": "time" }
 );
 
 -- ================================================================
--- SECTION 3A — ROLES
+-- ROLES
 -- Permissions stored as JSONB
 -- ================================================================
 
@@ -104,107 +89,31 @@ CREATE TABLE IF NOT EXISTS roles (
   id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name        TEXT NOT NULL UNIQUE,
   description TEXT,
-
-  permissions JSONB NOT NULL DEFAULT '{}'::jsonb,
-
+  permissions JSONB NOT NULL DEFAULT '{}'::jsonb, -- e.g. { "feature_key": { "view": true, "create": false, "update": false, "delete": false } }
   is_system   BOOLEAN NOT NULL DEFAULT FALSE,
-
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  create_info JSONB NOT NULL DEFAULT '{}'::JSONB, -- Store additional information about the created time and person who created the subscription, e.g. { "created_by": "user_id", "created_at": "time" }
+  update_info JSONB NOT NULL DEFAULT '{}'::JSONB, -- Store additional information about the updated time and person who updated the subscription, e.g. { "updated_by": "user_id", "updated_at": "time" }
 );
 
 CREATE INDEX IF NOT EXISTS idx_roles_permissions
 ON roles USING GIN (permissions);
 
 -- ================================================================
--- SECTION 3B — USER ROLES
+-- USER ROLES
 -- Many-to-many mapping
 -- ================================================================
 
 CREATE TABLE IF NOT EXISTS user_roles (
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   role_id UUID NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+  create_info JSONB NOT NULL DEFAULT '{}'::JSONB,
+  update_info JSONB NOT NULL DEFAULT '{}'::JSONB,
   PRIMARY KEY(user_id, role_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_user_roles_user
-ON user_roles(user_id);
-
-CREATE INDEX IF NOT EXISTS idx_user_roles_role
-ON user_roles(role_id);
 
 -- ================================================================
--- SECTION 3C — PERMISSIONS FUNCTION
--- ================================================================
-
-CREATE OR REPLACE FUNCTION fn_generate_admin_permissions()
-RETURNS JSONB
-LANGUAGE plpgsql
-AS $$
-DECLARE
-  perms JSONB := '{}';
-  rec RECORD;
-BEGIN
-  FOR rec IN
-    SELECT key
-    FROM features
-    WHERE is_active = TRUE
-  LOOP
-    perms := perms || jsonb_build_object(
-      rec.key,
-      jsonb_build_object(
-        'view', true,
-        'create', true,
-        'update', true,
-        'delete', true
-      )
-    );
-  END LOOP;
-
-  RETURN perms;
-END;
-$$;
-
--- ================================================================
--- SECTION 4 — FINANCIAL ACCOUNTING
--- ================================================================
-CREATE TABLE IF NOT EXISTS chart_of_accounts (
-  id         UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
-  code       TEXT         NOT NULL UNIQUE,
-  name       TEXT         NOT NULL,
-  type       account_type NOT NULL,
-  parent_id  UUID         REFERENCES chart_of_accounts(id),
-  is_system  BOOLEAN      NOT NULL DEFAULT FALSE,
-  is_active  BOOLEAN      NOT NULL DEFAULT TRUE,
-  created_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS journal_entries (
-  id          UUID           PRIMARY KEY DEFAULT gen_random_uuid(),
-  ref_type    TEXT           NOT NULL,
-  ref_id      UUID           NOT NULL,
-  entry_date  DATE           NOT NULL DEFAULT CURRENT_DATE,
-  description TEXT,
-  status      journal_status NOT NULL DEFAULT 'draft',
-  posted_at   TIMESTAMPTZ,
-  posted_by   UUID           REFERENCES users(id),
-  reversed_by UUID           REFERENCES journal_entries(id),
-  created_at  TIMESTAMPTZ    NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS journal_entry_lines (
-  id               UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
-  journal_entry_id UUID          NOT NULL REFERENCES journal_entries(id) ON DELETE CASCADE,
-  account_id       UUID          NOT NULL REFERENCES chart_of_accounts(id),
-  debit            NUMERIC(14,2) NOT NULL DEFAULT 0 CHECK (debit  >= 0),
-  credit           NUMERIC(14,2) NOT NULL DEFAULT 0 CHECK (credit >= 0),
-  description      TEXT,
-  CHECK (debit > 0 OR credit > 0),
-  CHECK (NOT (debit > 0 AND credit > 0))
-);
-
--- ================================================================
--- SECTION 5 — TAX RATES
+-- TAX RATES
 -- ================================================================
 CREATE TABLE IF NOT EXISTS tax_rates (
   id         UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -216,7 +125,7 @@ CREATE TABLE IF NOT EXISTS tax_rates (
 );
 
 -- ================================================================
--- SECTION 6 — SUPPLIERS
+-- SUPPLIERS
 -- ================================================================
 CREATE TABLE IF NOT EXISTS suppliers (
   id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -231,7 +140,7 @@ CREATE TABLE IF NOT EXISTS suppliers (
 );
 
 -- ================================================================
--- SECTION 7 — PRODUCTS & INVENTORY
+-- PRODUCTS & INVENTORY
 -- ================================================================
 CREATE TABLE IF NOT EXISTS categories (
   id        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -255,9 +164,6 @@ CREATE TABLE IF NOT EXISTS products (
   created_at  TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
   updated_at  TIMESTAMPTZ   NOT NULL DEFAULT NOW()
 );
-
-CREATE INDEX IF NOT EXISTS idx_products_name_trgm ON products USING GIN (name gin_trgm_ops);
-CREATE INDEX IF NOT EXISTS idx_products_barcode   ON products (barcode) WHERE barcode IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS inventory (
   id            UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -284,11 +190,8 @@ CREATE TABLE IF NOT EXISTS stock_movements (
   created_at TIMESTAMPTZ    NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_stock_movements_product ON stock_movements (product_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_stock_movements_shop    ON stock_movements (shop_id,    created_at DESC);
-
 -- ================================================================
--- SECTION 8 — PRICING & PRICE LISTS
+-- PRICING & PRICE LISTS
 -- ================================================================
 CREATE TABLE IF NOT EXISTS price_lists (
   id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -313,7 +216,7 @@ CREATE TABLE IF NOT EXISTS price_list_items (
 );
 
 -- ================================================================
--- SECTION 9 — CUSTOMERS
+-- CUSTOMERS
 -- ================================================================
 CREATE TABLE IF NOT EXISTS customer_groups (
   id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -336,9 +239,6 @@ CREATE TABLE IF NOT EXISTS customers (
   created_at        TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
   updated_at        TIMESTAMPTZ   NOT NULL DEFAULT NOW()
 );
-
-CREATE INDEX IF NOT EXISTS idx_customers_phone     ON customers (phone) WHERE phone IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_customers_name_trgm ON customers USING GIN (name gin_trgm_ops);
 
 CREATE TABLE IF NOT EXISTS customer_shop_stats (
   id              UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -363,7 +263,7 @@ CREATE TABLE IF NOT EXISTS loyalty_transactions (
 );
 
 -- ================================================================
--- SECTION 10 — INVOICES
+-- INVOICES
 -- ================================================================
 CREATE TABLE IF NOT EXISTS invoices (
   id              UUID           PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -400,11 +300,6 @@ CREATE TABLE IF NOT EXISTS invoices (
   UNIQUE (shop_id, invoice_number)
 );
 
-CREATE INDEX IF NOT EXISTS idx_invoices_customer  ON invoices (customer_id);
-CREATE INDEX IF NOT EXISTS idx_invoices_date      ON invoices (invoice_date DESC);
-CREATE INDEX IF NOT EXISTS idx_invoices_shop_date ON invoices (shop_id, invoice_date DESC);
-CREATE INDEX IF NOT EXISTS idx_invoices_status    ON invoices (status) WHERE status != 'paid';
-
 CREATE TABLE IF NOT EXISTS invoice_lines (
   id              UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
   invoice_id      UUID          NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
@@ -432,7 +327,7 @@ CREATE TABLE IF NOT EXISTS invoice_payments (
 );
 
 -- ================================================================
--- SECTION 11 — PURCHASES
+-- PURCHASES
 -- ================================================================
 CREATE TABLE IF NOT EXISTS purchases (
   id                  UUID            PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -474,7 +369,7 @@ CREATE TABLE IF NOT EXISTS purchase_lines (
 );
 
 -- ================================================================
--- SECTION 12 — SALES RETURNS
+-- SALES RETURNS
 -- ================================================================
 CREATE TABLE IF NOT EXISTS sales_returns (
   id            UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -518,7 +413,7 @@ CREATE TABLE IF NOT EXISTS sales_return_refunds (
 );
 
 -- ================================================================
--- SECTION 13 — PURCHASE RETURNS
+-- PURCHASE RETURNS
 -- ================================================================
 CREATE TABLE IF NOT EXISTS purchase_returns (
   id            UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -545,7 +440,7 @@ CREATE TABLE IF NOT EXISTS purchase_return_lines (
 );
 
 -- ================================================================
--- SECTION 14 — OFFLINE POS SYNC
+-- OFFLINE POS SYNC
 -- ================================================================
 CREATE TABLE IF NOT EXISTS offline_sync_log (
   id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -559,11 +454,49 @@ CREATE TABLE IF NOT EXISTS offline_sync_log (
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_offline_sync_status ON offline_sync_log (status)  WHERE status != 'synced';
-CREATE INDEX IF NOT EXISTS idx_offline_sync_shop   ON offline_sync_log (shop_id, created_at DESC);
 
 -- ================================================================
--- SECTION 15 — IDEMPOTENCY KEYS
+-- FINANCIAL ACCOUNTING
+-- ================================================================
+CREATE TABLE IF NOT EXISTS chart_of_accounts (
+  id         UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+  code       TEXT         NOT NULL UNIQUE,
+  name       TEXT         NOT NULL,
+  type       account_type NOT NULL,
+  parent_id  UUID         REFERENCES chart_of_accounts(id),
+  is_system  BOOLEAN      NOT NULL DEFAULT FALSE,
+  is_active  BOOLEAN      NOT NULL DEFAULT TRUE,
+  create_info JSONB NOT NULL DEFAULT '{}'::JSONB, -- Store additional information about the created time and person who created the subscription, e.g. { "created_by": "user_id", "created_at": "time" }
+  update_info JSONB NOT NULL DEFAULT '{}'::JSONB, -- Store additional information about the updated time and person who updated the subscription, e.g. { "updated_by": "user_id", "updated_at": "time" }
+);
+
+CREATE TABLE IF NOT EXISTS journal_entries (
+  id          UUID           PRIMARY KEY DEFAULT gen_random_uuid(),
+  ref_type    TEXT           NOT NULL,
+  ref_id      UUID           NOT NULL,
+  entry_date  DATE           NOT NULL DEFAULT CURRENT_DATE,
+  description TEXT,
+  status      journal_status NOT NULL DEFAULT 'draft',
+  posted_at   TIMESTAMPTZ,
+  posted_by   UUID           REFERENCES users(id),
+  reversed_by UUID           REFERENCES journal_entries(id),
+  create_info JSONB NOT NULL DEFAULT '{}'::JSONB, -- Store additional information about the created time and person who created the subscription, e.g. { "created_by": "user_id", "created_at": "time" }
+  update_info JSONB NOT NULL DEFAULT '{}'::JSONB, -- Store additional information about the updated time and person who updated the subscription, e.g. { "updated_by": "user_id", "updated_at": "time" }
+);
+
+CREATE TABLE IF NOT EXISTS journal_entry_lines (
+  id               UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
+  journal_entry_id UUID          NOT NULL REFERENCES journal_entries(id) ON DELETE CASCADE,
+  account_id       UUID          NOT NULL REFERENCES chart_of_accounts(id),
+  debit            NUMERIC(14,2) NOT NULL DEFAULT 0 CHECK (debit  >= 0),
+  credit           NUMERIC(14,2) NOT NULL DEFAULT 0 CHECK (credit >= 0),
+  description      TEXT,
+  CHECK (debit > 0 OR credit > 0),
+  CHECK (NOT (debit > 0 AND credit > 0))
+);
+
+-- ================================================================
+-- IDEMPOTENCY KEYS
 -- ================================================================
 CREATE TABLE IF NOT EXISTS idempotency_keys (
   key        TEXT        PRIMARY KEY,
@@ -573,10 +506,8 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
   expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '24 hours'
 );
 
-CREATE INDEX IF NOT EXISTS idx_idempotency_expires ON idempotency_keys (expires_at);
-
 -- ================================================================
--- SECTION 16 — AI / SMART INVENTORY
+-- AI / SMART INVENTORY
 -- ================================================================
 CREATE TABLE IF NOT EXISTS product_inventory_metrics (
   id                     UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -604,7 +535,7 @@ CREATE TABLE IF NOT EXISTS reorder_suggestions (
 );
 
 -- ================================================================
--- SECTION 17 — REPORTING
+-- REPORTING
 -- ================================================================
 CREATE TABLE IF NOT EXISTS daily_product_sales_summary (
   id            UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -619,11 +550,8 @@ CREATE TABLE IF NOT EXISTS daily_product_sales_summary (
   UNIQUE (shop_id, product_id, summary_date)
 );
 
-CREATE INDEX IF NOT EXISTS idx_daily_summary_date    ON daily_product_sales_summary (summary_date DESC);
-CREATE INDEX IF NOT EXISTS idx_daily_summary_product ON daily_product_sales_summary (product_id, summary_date DESC);
-
 -- ================================================================
--- SECTION 18 — AUDIT LOG
+-- AUDIT LOG
 -- ================================================================
 CREATE TABLE IF NOT EXISTS audit_logs (
   id         UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -638,12 +566,8 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   note       TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_audit_logs_record ON audit_logs (table_name, record_id);
-CREATE INDEX IF NOT EXISTS idx_audit_logs_user   ON audit_logs (changed_by, changed_at DESC);
-CREATE INDEX IF NOT EXISTS idx_audit_logs_date   ON audit_logs (changed_at DESC);
-
 -- ================================================================
--- SECTION 19 — TRIGGERS
+-- TRIGGERS
 -- ================================================================
 
 CREATE OR REPLACE FUNCTION set_updated_at()
@@ -731,8 +655,80 @@ $$;
 DO $$ BEGIN CREATE TRIGGER trg_validate_return_qty BEFORE INSERT ON sales_return_lines FOR EACH ROW EXECUTE FUNCTION validate_return_quantity();
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
+
 -- ================================================================
--- SECTION 20 — SEED DATA
+-- INDEXES
+-- ================================================================
+
+CREATE INDEX IF NOT EXISTS idx_user_roles_user
+ON user_roles(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_user_roles_role
+ON user_roles(role_id);
+
+CREATE INDEX IF NOT EXISTS idx_products_name_trgm ON products USING GIN (name gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_products_barcode   ON products (barcode) WHERE barcode IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_stock_movements_product ON stock_movements (product_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_stock_movements_shop    ON stock_movements (shop_id,    created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_customers_phone     ON customers (phone) WHERE phone IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_customers_name_trgm ON customers USING GIN (name gin_trgm_ops);
+
+CREATE INDEX IF NOT EXISTS idx_invoices_customer  ON invoices (customer_id);
+CREATE INDEX IF NOT EXISTS idx_invoices_date      ON invoices (invoice_date DESC);
+CREATE INDEX IF NOT EXISTS idx_invoices_shop_date ON invoices (shop_id, invoice_date DESC);
+CREATE INDEX IF NOT EXISTS idx_invoices_status    ON invoices (status) WHERE status != 'paid';
+
+
+CREATE INDEX IF NOT EXISTS idx_offline_sync_status ON offline_sync_log (status)  WHERE status != 'synced';
+CREATE INDEX IF NOT EXISTS idx_offline_sync_shop   ON offline_sync_log (shop_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_idempotency_expires ON idempotency_keys (expires_at);
+
+
+CREATE INDEX IF NOT EXISTS idx_daily_summary_date    ON daily_product_sales_summary (summary_date DESC);
+CREATE INDEX IF NOT EXISTS idx_daily_summary_product ON daily_product_sales_summary (product_id, summary_date DESC);
+
+
+CREATE INDEX IF NOT EXISTS idx_audit_logs_record ON audit_logs (table_name, record_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_user   ON audit_logs (changed_by, changed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_date   ON audit_logs (changed_at DESC);
+
+-- ================================================================
+-- FUNCTIONS
+-- ================================================================
+
+CREATE OR REPLACE FUNCTION fn_generate_admin_permissions()
+RETURNS JSONB
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  perms JSONB := '{}';
+  rec RECORD;
+BEGIN
+  FOR rec IN
+    SELECT key
+    FROM features
+    WHERE is_active = TRUE
+  LOOP
+    perms := perms || jsonb_build_object(
+      rec.key,
+      jsonb_build_object(
+        'view', true,
+        'create', true,
+        'update', true,
+        'delete', true
+      )
+    );
+  END LOOP;
+
+  RETURN perms;
+END;
+$$;
+
+-- ================================================================
+-- SEED DATA
 -- ================================================================
 INSERT INTO chart_of_accounts (code, name, type, is_system) VALUES
   ('1001', 'Cash in Hand',        'asset',     TRUE),

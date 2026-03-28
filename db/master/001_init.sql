@@ -10,19 +10,23 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 -- MIGRATIONS TRACKER
 -- ────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS migrations (
-  filename   TEXT        PRIMARY KEY,
-  applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    filename TEXT PRIMARY KEY,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- ────────────────────────────────────────────
 -- ENUMS
 -- ────────────────────────────────────────────
+
+-- Provisioning flow: provisioning -> active -> (suspended/expired) -> deprovisioned
+-- Provisioning = in progress. Active = fully provisioned and operational.
+-- Suspended = temporary hold (violation warning) with intent to recover. Expired = subscription ended without renewal. Deprovisioned = DB deleted, tenant closed.
 DO $$ BEGIN
-  CREATE TYPE tenant_status   AS ENUM ('provisioning', 'active', 'suspended', 'expired', 'deprovisioned');
+  CREATE TYPE plan_type   AS ENUM ('starter', 'growth', 'enterprise', 'custom');
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 DO $$ BEGIN
-  CREATE TYPE plan_type       AS ENUM ('trial', 'starter', 'growth', 'enterprise');
+  CREATE TYPE tenant_status   AS ENUM ('provisioning', 'active', 'suspended', 'expired', 'deprovisioned');
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 DO $$ BEGIN
@@ -30,7 +34,7 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 DO $$ BEGIN
-  CREATE TYPE provision_status AS ENUM ('pending', 'success', 'failed', 'rolled_back');
+  CREATE TYPE payment_status   AS ENUM ('pending', 'completed', 'failed');
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- ================================================================
@@ -39,25 +43,30 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 -- request to resolve which tenant DB to connect to.
 -- ================================================================
 CREATE TABLE IF NOT EXISTS tenants (
-  id          UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
-  name        TEXT          NOT NULL,
-  email      TEXT          NOT NULL,              -- primary contact email for this tenant
-  phone      TEXT,                         -- primary contact phone number for this tenant
-  slug        TEXT          NOT NULL UNIQUE,       -- used in subdomain: slug.yourerp.com
-  db_name     TEXT          NOT NULL UNIQUE,       -- postgres DB name: tenant_<slug>
-  status      tenant_status NOT NULL DEFAULT 'provisioning',
-  plan        plan_type     NOT NULL DEFAULT 'trial',
-  expires_at  TIMESTAMPTZ,                         -- NULL = no expiry (enterprise)
-  country     CHAR(2)       NOT NULL DEFAULT 'IN',
-  timezone    TEXT          NOT NULL DEFAULT 'Asia/Kolkata',
-  feature_ids JSONB         NOT NULL DEFAULT '{}',
-  plan_details JSONB        NOT NULL DEFAULT '{}',
-  created_at  TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
-  updated_at  TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid (),
+    name TEXT NOT NULL,
+    email TEXT, -- primary contact email for this tenant
+    phone TEXT NOT NULL UNIQUE, -- primary contact phone number for this tenant
+    logo TEXT, -- URL to tenant logo, can be used in UI and invoice templates
+    industry TEXT, -- Retail, Restaurant, etc. Can be used for analytics and customized features in the future
+    gst_number TEXT UNIQUE,
+    pan_number TEXT,
+    slug TEXT NOT NULL UNIQUE, -- used in subdomain: slug.yourerp.com. The same can be used for db name
+    company_name TEXT NOT NULL UNIQUE, -- postgres DB name: tenant_<slug>
+    address TEXT,
+    status tenant_status NOT NULL DEFAULT 'provisioning',
+    country CHAR(2) NOT NULL DEFAULT 'IN',
+    currency CHAR(3) NOT NULL DEFAULT 'INR',
+    timezone TEXT NOT NULL DEFAULT 'Asia/Kolkata',
+    create_info JSONB NOT NULL DEFAULT '{}'::JSONB, -- Store additional information about the created time and person who created the subscription, e.g. { "created_by": "user_id", "created_at": "time" }
+    update_info JSONB NOT NULL DEFAULT '{}'::JSONB, -- Store additional information about the updated time and person who updated the subscription, e.g. { "updated_by": "user_id", "updated_at": "time" }
 );
 
-CREATE INDEX IF NOT EXISTS idx_tenants_slug       ON tenants (slug);
-CREATE INDEX IF NOT EXISTS idx_tenants_status     ON tenants (status) WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_tenants_slug ON tenants (slug);
+
+CREATE INDEX IF NOT EXISTS idx_tenants_status ON tenants (status)
+WHERE status = 'active';
+
 CREATE INDEX IF NOT EXISTS idx_tenants_feature_ids ON tenants USING GIN (feature_ids);
 
 -- ================================================================
@@ -65,36 +74,47 @@ CREATE INDEX IF NOT EXISTS idx_tenants_feature_ids ON tenants USING GIN (feature
 -- One active subscription per tenant at a time.
 -- ================================================================
 CREATE TABLE IF NOT EXISTS subscriptions (
-  id              UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
-  tenant_id       UUID          NOT NULL REFERENCES tenants(id) ON DELETE RESTRICT,
-  plan            plan_type     NOT NULL,
-  billing_cycle   billing_cycle NOT NULL DEFAULT 'monthly',
-  amount          NUMERIC(10,2) NOT NULL,
-  currency        CHAR(3)       NOT NULL DEFAULT 'INR',
-  started_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
-  ends_at         TIMESTAMPTZ,
-  next_billing_at TIMESTAMPTZ,
-  is_active       BOOLEAN       NOT NULL DEFAULT TRUE,
-  payment_ref     TEXT,
-  created_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid (),
+    tenant_id UUID NOT NULL REFERENCES tenants (id) ON DELETE RESTRICT,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    is_trial BOOLEAN NOT NULL DEFAULT FALSE, -- Whether this subscription is currently in trial period. Can be used for special trial features or messaging.
+    payment_id UUID NOT NULL REFERENCES payment_details (id) ON DELETE RESTRICT, -- Reference to payment details for this subscription. Can be used to track payment history and link to invoices/receipts.
+    plan_id UUID NOT NULL REFERENCES plan_details (id) ON DELETE RESTRICT, -- ID of the plan this tenant is subscribed to. Used for quick reference but the real source of truth is in feature_ids.
+    billing_cycle billing_cycle NOT NULL DEFAULT 'monthly',
+    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ, -- can be used to store the end date by default and changed if the tenant renews or changes plan before expiry or provided grace period.
+    create_info JSONB NOT NULL DEFAULT '{}'::JSONB, -- Store additional information about the created time and person who created the subscription, e.g. { "created_by": "user_id", "created_at": "time" }
+);
+
+-- ================================================================
+-- PAyMENT DETAILS
+-- Store payment information for subscriptions. Can be expanded to include
+-- ================================================================
+CREATE TABLE IF NOT EXISTS payment_details (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid (),
+    amount NUMERIC(10, 2) NOT NULL,
+    currency CHAR(3) NOT NULL DEFAULT 'INR',
+    payment_method TEXT NOT NULL,
+    payment_status payment_status NOT NULL DEFAULT 'pending',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_subscriptions_tenant ON subscriptions (tenant_id, is_active);
 
 -- ================================================================
--- PLAN LIMITS
+-- PLAN DETAILS
 -- Defines what each plan allows. Checked during provisioning
 -- and enforced by middleware.
 -- ================================================================
-CREATE TABLE IF NOT EXISTS plan_limits (
-  plan            plan_type NOT NULL PRIMARY KEY,
-  max_shops       INT       NOT NULL DEFAULT 1,
-  max_users       INT       NOT NULL DEFAULT 5,
-  max_products    INT       NOT NULL DEFAULT 500,
-  max_invoices_pm INT       NOT NULL DEFAULT 1000,
-  ai_features     BOOLEAN   NOT NULL DEFAULT FALSE,
-  api_access      BOOLEAN   NOT NULL DEFAULT FALSE,
-  support_level   TEXT      NOT NULL DEFAULT 'email'
+CREATE TABLE IF NOT EXISTS plan_details (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid (),
+    type plan_type NOT NULL UNIQUE, --type of the plan, e.g. 'starter', 'growth', 'enterprise', 'custom'
+    max_shops INT NOT NULL DEFAULT 1,
+    max_users INT NOT NULL DEFAULT 5,
+    max_products INT NOT NULL DEFAULT 500,
+    feature_ids TEXT[] NOT NULL DEFAULT '{}'::TEXT[], -- Array of strings referencing features enabled for this tenant. Populated by fn_apply_plan_to_tenant and used by middleware for feature gating without joins.
+    create_info JSONB NOT NULL DEFAULT '{}'::JSONB, -- Store additional information about the created time and person who created the subscription, e.g. { "created_by": "user_id", "created_at": "time" }
+    update_info JSONB NOT NULL DEFAULT '{}'::JSONB, -- Store additional information about the updated time and person who updated the subscription, e.g. { "updated_by": "user_id", "updated_at": "time" }
 );
 
 -- ================================================================
@@ -103,246 +123,171 @@ CREATE TABLE IF NOT EXISTS plan_limits (
 -- Operational users (cashiers, managers) live in each tenant DB.
 -- ================================================================
 CREATE TABLE IF NOT EXISTS admin_accounts (
-  id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-  tenant_id     UUID        NOT NULL REFERENCES tenants(id) ON DELETE RESTRICT,
-  name          TEXT        NOT NULL,
-  email         TEXT        NOT NULL,
-  password      TEXT        NOT NULL,
-  is_active     BOOLEAN     NOT NULL DEFAULT TRUE,
-  last_login_at TIMESTAMPTZ,
-  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE (tenant_id, email)
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid (),
+    name TEXT NOT NULL,
+    email TEXT NOT NULL,
+    password TEXT NOT NULL,
+    create_info JSONB NOT NULL DEFAULT '{}'::JSONB,
+    update_info JSONB NOT NULL DEFAULT '{}'::JSONB,
+    UNIQUE (tenant_id, email)
 );
 
 CREATE INDEX IF NOT EXISTS idx_admin_accounts_email ON admin_accounts (email);
-
--- ================================================================
--- PROVISIONING LOG
--- Immutable audit trail of every tenant DB provisioning event.
--- ================================================================
-CREATE TABLE IF NOT EXISTS provisioning_log (
-  id           UUID             PRIMARY KEY DEFAULT gen_random_uuid(),
-  tenant_id    UUID             REFERENCES tenants(id),
-  event        TEXT             NOT NULL,   -- 'provision' | 'deprovision' | 'migrate' | 'suspend'
-  status       provision_status NOT NULL DEFAULT 'pending',
-  db_name      TEXT,
-  triggered_by TEXT,
-  error_detail TEXT,
-  duration_ms  INT,
-  created_at   TIMESTAMPTZ      NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_provisioning_log_tenant ON provisioning_log (tenant_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_provisioning_log_status ON provisioning_log (status) WHERE status != 'success';
-
--- ================================================================
--- INTERNAL API KEYS
--- For the developer portal / provisioning API.
--- ================================================================
-CREATE TABLE IF NOT EXISTS internal_api_keys (
-  id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-  name         TEXT        NOT NULL,
-  key_hash     TEXT        NOT NULL UNIQUE,
-  is_active    BOOLEAN     NOT NULL DEFAULT TRUE,
-  last_used_at TIMESTAMPTZ,
-  expires_at   TIMESTAMPTZ,
-  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
 
 -- ================================================================
 -- FEATURE REGISTRY
 -- Master list of every feature that exists in the system.
 -- Adding a new feature = one INSERT row. No schema change.
 -- ================================================================
-DO $$ BEGIN
-  CREATE TYPE feature_category AS ENUM (
-    'core',
-    'growth',
-    'enterprise',
-    'ai'
-  );
-EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE TABLE IF NOT EXISTS  features (
-  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  key          TEXT NOT NULL UNIQUE,
-  name         TEXT NOT NULL,
-  description  TEXT,
-
-  category     feature_category NOT NULL,
-
-  route        TEXT,
-  icon         TEXT,
-  parent_id    UUID REFERENCES features(id),
-
-  is_limit     BOOLEAN NOT NULL DEFAULT FALSE,
-  default_val  TEXT,
-
-  is_active    BOOLEAN NOT NULL DEFAULT TRUE,
-
-  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+CREATE TABLE IF NOT EXISTS features (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid (),
+    key TEXT NOT NULL UNIQUE, -- unique key for the feature, e.g. 'feat_dashboard', 'feat_pos', 'limit_shops'
+    name TEXT NOT NULL,
+    description TEXT,
+    parent_id UUID REFERENCES features (id),
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    is_premium BOOLEAN NOT NULL DEFAULT FALSE, -- Whether this feature is a proivided by default when the parent feature is selected.
+    create_info JSONB NOT NULL DEFAULT '{}'::JSONB,
+    update_info JSONB NOT NULL DEFAULT '{}'::JSONB
 );
 
-INSERT INTO features (key, name, description, category) VALUES
-  ('feat_dashboard',          'Dashboard',             'Main overview and analytics',             'core'),
-  ('feat_pos',                'POS Terminal',          'Point of sale billing',                   'core'),
-  ('feat_inventory',          'Inventory',             'Stock tracking and movements',            'core'),
-  ('feat_purchases',          'Purchases',             'Supplier purchase orders',                'core'),
-  ('feat_basic_reports',      'Basic Reports',         'Daily sales and stock summary',           'core'),
-  ('feat_customers',          'Customers',             'Customer management',                     'core'),
-  ('feat_suppliers',          'Suppliers',             'Supplier management',                     'core'),
-  ('feat_multi_shop',         'Multi Shop',            'Manage multiple shop locations',          'growth'),
-  ('feat_price_lists',        'Price Lists',           'Tiered pricing and price lists',          'growth'),
-  ('feat_customer_groups',    'Customer Groups',       'Group-based pricing and segmentation',    'growth'),
-  ('feat_loyalty',            'Loyalty Points',        'Global loyalty program across shops',     'growth'),
-  ('feat_offline_pos',        'Offline POS',           'Billing without internet connectivity',   'growth'),
-  ('feat_advanced_reports',   'Advanced Reports',      'P&L, trend analysis, custom date ranges', 'growth'),
-  ('feat_purchase_variance',  'Purchase Variance',     'Track cost variance across purchases',    'growth'),
-  ('feat_landed_cost',        'Landed Cost',           'Freight and additional cost allocation',  'growth'),
-  ('feat_accounting',         'Accounting',            'Double-entry bookkeeping and journals',   'enterprise'),
-  ('feat_gst_einvoice',       'GST E-Invoice',         'IRN, ACK and e-way bill generation',      'enterprise'),
-  ('feat_tcs_tds',            'TCS / TDS',             'Tax collected/deducted at source',        'enterprise'),
-  ('feat_audit_log',          'Audit Log',             'Full financial change history',           'enterprise'),
-  ('feat_books_lock',         'Books Lock',            'Prevent backdated financial edits',       'enterprise'),
-  ('feat_api_access',         'API Access',            'REST API for external integrations',      'enterprise'),
-  ('feat_whatsapp_sms',       'WhatsApp / SMS',        'Marketing and transactional messaging',   'enterprise'),
-  ('feat_ai_reorder',         'AI Reorder',            'Auto reorder suggestions',                'ai'),
-  ('feat_ai_dead_stock',      'Dead Stock Detection',  'Identify slow and dead inventory',        'ai'),
-  ('feat_ai_demand_forecast', 'Demand Forecast',       'Predict future stock requirements',       'ai'),
-  ('feat_ai_price_suggestion','Price Suggestion',      'AI-based selling price recommendations',  'ai')
-ON CONFLICT (key) DO NOTHING;
-
-INSERT INTO features (key, name, description, category, is_limit, default_val) VALUES
-  ('limit_shops',              'Shop Limit',            'Maximum number of shops',           'core', TRUE, '1'),
-  ('limit_users',              'User Limit',            'Maximum number of users',           'core', TRUE, '3'),
-  ('limit_products',           'Product Limit',         'Maximum number of products',        'core', TRUE, '500'),
-  ('limit_invoices_per_month', 'Monthly Invoice Limit', 'Maximum invoices per month',        'core', TRUE, '1000')
-ON CONFLICT (key) DO NOTHING;
-
--- ================================================================
--- PLAN FEATURE MAP
--- Maps which features are enabled per plan.
--- For limit features, value stores the numeric limit as text.
--- For boolean features, value is NULL (presence = enabled).
--- ================================================================
-CREATE TABLE IF NOT EXISTS plan_features (
-  plan       TEXT NOT NULL,
-  feature_id UUID NOT NULL REFERENCES features(id) ON DELETE CASCADE,
-  value      TEXT,
-  PRIMARY KEY (plan, feature_id)
-);
--- trial
-INSERT INTO plan_features (plan, feature_id, value)
-SELECT 'trial', f.id, v.value
-FROM (
-  VALUES
-    ('feat_pos', NULL),
-    ('feat_inventory', NULL),
-    ('feat_purchases', NULL),
-    ('feat_basic_reports', NULL),
-    ('feat_customers', NULL),
-    ('feat_suppliers', NULL),
-    ('limit_shops', '1'),
-    ('limit_users', '3'),
-    ('limit_products', '200'),
-    ('limit_invoices_per_month', '500')
-) AS v(key, value)
-JOIN features f ON f.key = v.key
-ON CONFLICT (plan, feature_id) DO NOTHING;
-
--- starter
-INSERT INTO plan_features (plan, feature_id, value)
-SELECT 'starter', f.id, v.value
-FROM (
-  VALUES
-    ('feat_pos', NULL),
-    ('feat_inventory', NULL),
-    ('feat_purchases', NULL),
-    ('feat_basic_reports', NULL),
-    ('feat_customers', NULL),
-    ('feat_suppliers', NULL),
-    ('feat_price_lists', NULL),
-    ('feat_offline_pos', NULL),
-    ('limit_shops', '1'),
-    ('limit_users', '5'),
-    ('limit_products', '1000'),
-    ('limit_invoices_per_month', '3000')
-) AS v(key, value)
-JOIN features f ON f.key = v.key
-ON CONFLICT (plan, feature_id) DO NOTHING;
-
--- growth
-INSERT INTO plan_features (plan, feature_id, value)
-SELECT 'growth', f.id, v.value
-FROM (
-  VALUES
-    ('feat_pos', NULL),
-    ('feat_inventory', NULL),
-    ('feat_purchases', NULL),
-    ('feat_basic_reports', NULL),
-    ('feat_customers', NULL),
-    ('feat_suppliers', NULL),
-    ('feat_multi_shop', NULL),
-    ('feat_price_lists', NULL),
-    ('feat_customer_groups', NULL),
-    ('feat_loyalty', NULL),
-    ('feat_offline_pos', NULL),
-    ('feat_advanced_reports', NULL),
-    ('feat_purchase_variance', NULL),
-    ('feat_landed_cost', NULL),
-    ('feat_gst_einvoice', NULL),
-    ('feat_audit_log', NULL),
-    ('feat_api_access', NULL),
-    ('feat_whatsapp_sms', NULL),
-    ('feat_ai_reorder', NULL),
-    ('feat_ai_dead_stock', NULL),
-    ('limit_shops', '5'),
-    ('limit_users', '25'),
-    ('limit_products', '10000'),
-    ('limit_invoices_per_month', '20000')
-) AS v(key, value)
-JOIN features f ON f.key = v.key
-ON CONFLICT (plan, feature_id) DO NOTHING;
-
--- enterprise
-INSERT INTO plan_features (plan, feature_id, value)
-SELECT 'enterprise', f.id, v.value
-FROM (
-  VALUES
-    ('feat_pos', NULL),
-    ('feat_inventory', NULL),
-    ('feat_purchases', NULL),
-    ('feat_basic_reports', NULL),
-    ('feat_customers', NULL),
-    ('feat_suppliers', NULL),
-    ('feat_multi_shop', NULL),
-    ('feat_price_lists', NULL),
-    ('feat_customer_groups', NULL),
-    ('feat_loyalty', NULL),
-    ('feat_offline_pos', NULL),
-    ('feat_advanced_reports', NULL),
-    ('feat_purchase_variance', NULL),
-    ('feat_landed_cost', NULL),
-    ('feat_accounting', NULL),
-    ('feat_gst_einvoice', NULL),
-    ('feat_tcs_tds', NULL),
-    ('feat_audit_log', NULL),
-    ('feat_books_lock', NULL),
-    ('feat_api_access', NULL),
-    ('feat_whatsapp_sms', NULL),
-    ('feat_ai_reorder', NULL),
-    ('feat_ai_dead_stock', NULL),
-    ('feat_ai_demand_forecast', NULL),
-    ('feat_ai_price_suggestion', NULL),
-    ('limit_shops', '999'),
-    ('limit_users', '999'),
-    ('limit_products', '999999'),
-    ('limit_invoices_per_month', '999999')
-) AS v(key, value)
-JOIN features f ON f.key = v.key
-ON CONFLICT (plan, feature_id) DO NOTHING;
+INSERT INTO
+    features (
+        key,
+        name,
+        description,
+    )
+VALUES (
+        'feat_dashboard',
+        'Dashboard',
+        'Main overview and analytics',
+    ),
+    (
+        'feat_pos',
+        'POS Terminal',
+        'Point of sale billing',
+    ),
+    (
+        'feat_inventory',
+        'Inventory',
+        'Stock tracking and movements',
+    ),
+    (
+        'feat_purchases',
+        'Purchases',
+        'Supplier purchase orders',
+    ),
+    (
+        'feat_basic_reports',
+        'Basic Reports',
+        'Daily sales and stock summary',
+    ),
+    (
+        'feat_customers',
+        'Customers',
+        'Customer management',
+    ),
+    (
+        'feat_suppliers',
+        'Suppliers',
+        'Supplier management',
+    ),
+    (
+        'feat_multi_shop',
+        'Multi Shop',
+        'Manage multiple shop locations',
+    ),
+    (
+        'feat_price_lists',
+        'Price Lists',
+        'Tiered pricing and price lists',
+    ),
+    (
+        'feat_customer_groups',
+        'Customer Groups',
+        'Group-based pricing and segmentation',
+    ),
+    (
+        'feat_loyalty',
+        'Loyalty Points',
+        'Global loyalty program across shops',
+    ),
+    (
+        'feat_offline_pos',
+        'Offline POS',
+        'Billing without internet connectivity',
+    ),
+    (
+        'feat_advanced_reports',
+        'Advanced Reports',
+        'P&L, trend analysis, custom date ranges',
+    ),
+    (
+        'feat_purchase_variance',
+        'Purchase Variance',
+        'Track cost variance across purchases',
+    ),
+    (
+        'feat_landed_cost',
+        'Landed Cost',
+        'Freight and additional cost allocation',
+    ),
+    (
+        'feat_accounting',
+        'Accounting',
+        'Double-entry bookkeeping and journals',
+    ),
+    (
+        'feat_gst_einvoice',
+        'GST E-Invoice',
+        'IRN, ACK and e-way bill generation',
+    ),
+    (
+        'feat_tcs_tds',
+        'TCS / TDS',
+        'Tax collected/deducted at source',
+    ),
+    (
+        'feat_audit_log',
+        'Audit Log',
+        'Full financial change history',
+    ),
+    (
+        'feat_books_lock',
+        'Books Lock',
+        'Prevent backdated financial edits',
+    ),
+    (
+        'feat_api_access',
+        'API Access',
+        'REST API for external integrations',
+    ),
+    (
+        'feat_whatsapp_sms',
+        'WhatsApp / SMS',
+        'Marketing and transactional messaging',
+    ),
+    (
+        'feat_ai_reorder',
+        'AI Reorder',
+        'Auto reorder suggestions',
+    ),
+    (
+        'feat_ai_dead_stock',
+        'Dead Stock Detection',
+        'Identify slow and dead inventory',
+    ),
+    (
+        'feat_ai_demand_forecast',
+        'Demand Forecast',
+        'Predict future stock requirements',
+    ),
+    (
+        'feat_ai_price_suggestion',
+        'Price Suggestion',
+        'AI-based selling price recommendations',
+    ) ON CONFLICT (key) DO NOTHING;
 
 -- ================================================================
 -- HELPER FUNCTION — fn_apply_plan_to_tenant
@@ -360,7 +305,7 @@ DECLARE
 BEGIN
   FOR rec IN
     SELECT f.key, f.is_limit, pf.value
-    FROM plan_features pf
+    FROM features pf
     JOIN features f ON f.id = pf.feature_id
     WHERE pf.plan = p_plan
       AND f.is_active = TRUE
@@ -388,23 +333,6 @@ BEGIN
   WHERE id = p_tenant_id;
 END;
 $$;
-
--- ================================================================
--- FEATURE CHANGE LOG
--- Auto-populated by trigger. Never write to this manually.
--- ================================================================
-CREATE TABLE IF NOT EXISTS tenant_feature_changelog (
-  id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-  tenant_id   UUID        NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-  feature_key TEXT        NOT NULL,
-  old_value   TEXT,
-  new_value   TEXT,
-  changed_by  TEXT,
-  reason      TEXT,
-  changed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_feat_changelog_tenant ON tenant_feature_changelog (tenant_id, changed_at DESC);
 
 -- Auto-log every change to tenants.feature_ids
 CREATE OR REPLACE FUNCTION trg_log_feature_changes()
@@ -439,15 +367,6 @@ BEGIN
 END;
 $$;
 
-DO $$ BEGIN
-  CREATE TRIGGER trg_tenants_feature_changes
-    AFTER UPDATE ON tenants
-    FOR EACH ROW EXECUTE FUNCTION trg_log_feature_changes();
-EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-
--- ================================================================
--- TRIGGERS — updated_at
--- ================================================================
 CREATE OR REPLACE FUNCTION set_updated_at()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
@@ -455,6 +374,15 @@ BEGIN
   RETURN NEW;
 END;
 $$;
+
+-- ================================================================
+-- TRIGGERS — updated_at
+-- ================================================================
+DO $$ BEGIN
+  CREATE TRIGGER trg_tenants_feature_changes
+    AFTER UPDATE ON tenants
+    FOR EACH ROW EXECUTE FUNCTION trg_log_feature_changes();
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 DO $$ BEGIN
   CREATE TRIGGER trg_tenants_updated_at
@@ -471,5 +399,6 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 -- ================================================================
 -- RECORD THIS MIGRATION
 -- ================================================================
-INSERT INTO migrations (filename) VALUES ('000_master.sql')
-ON CONFLICT (filename) DO NOTHING;
+INSERT INTO
+    migrations (filename)
+VALUES ('001_master.sql') ON CONFLICT (filename) DO NOTHING;
